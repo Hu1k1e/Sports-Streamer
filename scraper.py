@@ -17,12 +17,13 @@ async def get_events():
             events = []
             for a in soup.find_all('a', href=True):
                 href = a['href']
-                text = a.get_text(strip=True)
-                # Naive filter for events, excluding generic links
-                if len(text) > 3 and not href.startswith('http') and href != '/':
-                    path = href.lstrip('/')
-                    if text not in [e['name'] for e in events]:
-                        events.append({"name": text, "path": path})
+                if href.startswith('/watch/'):
+                    h1 = a.find('h1')
+                    if h1:
+                        title = h1.get('title') or h1.get_text(strip=True)
+                        path = href.lstrip('/')
+                        if title and title not in [e['name'] for e in events]:
+                            events.append({"name": title, "path": path})
             return events
         except Exception as e:
             print(f"Error fetching events: {e}")
