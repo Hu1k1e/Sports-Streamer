@@ -1,15 +1,14 @@
 import asyncio
 from playwright.async_api import async_playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth
 from bs4 import BeautifulSoup
 from config import STREAMED_PK_URL, DEFAULT_HEADERS
 
 async def get_events():
-    async with async_playwright() as p:
+    async with Stealth().use_async(async_playwright()) as p:
         browser = await p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
         context = await browser.new_context(user_agent=DEFAULT_HEADERS["User-Agent"])
         page = await context.new_page()
-        await stealth_async(page)
         try:
             await page.goto(STREAMED_PK_URL, wait_until="domcontentloaded", timeout=15000)
             content = await page.content()
@@ -33,11 +32,10 @@ async def get_events():
 
 async def get_stream_url(event_path):
     url = f"{STREAMED_PK_URL}/{event_path}"
-    async with async_playwright() as p:
+    async with Stealth().use_async(async_playwright()) as p:
         browser = await p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
         context = await browser.new_context(user_agent=DEFAULT_HEADERS["User-Agent"])
         page = await context.new_page()
-        await stealth_async(page)
         
         m3u8_url = None
         m3u8_headers = {}
@@ -72,7 +70,6 @@ async def get_stream_url(event_path):
                     src = await iframe.get_attribute("src")
                     if src:
                         iframe_page = await context.new_page()
-                        await stealth_async(iframe_page)
                         await iframe_page.route("**/*", route_handler)
                         iframe_url = src if src.startswith("http") else f"{STREAMED_PK_URL}{src}"
                         try:
