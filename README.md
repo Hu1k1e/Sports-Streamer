@@ -11,8 +11,8 @@ A Dockerized middleware application that scrapes streamed.pk for active live str
 
 1. Open your Portainer dashboard and go to **Stacks** -> **Add stack**.
 2. Name the stack (e.g., `sports-streamer`).
-3. Select **Repository** as the build method.
-4. Enter the repository URL: `https://github.com/Hu1k1e/Sports-Streamer`
+3. Select **Web editor** as the build method.
+4. Copy and paste the contents of `docker-compose.yml` into the editor.
 5. Crucially, set the **Environment Variables**:
    - `PROXY_HOST`: Set this to `http://<YOUR_DOCKER_HOST_IP>:7694` (e.g., `http://192.168.1.50:7694`). If left as `127.0.0.1`, Jellyfin will not be able to connect.
 6. Click **Deploy the stack**.

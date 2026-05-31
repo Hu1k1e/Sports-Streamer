@@ -2,7 +2,7 @@ version: '3.8'
 
 services:
   streamed-proxy:
-    build: .
+    build: https://github.com/Hu1k1e/Sports-Streamer.git#main
     container_name: streamed-proxy
     ports:
       - "7694:5000"
