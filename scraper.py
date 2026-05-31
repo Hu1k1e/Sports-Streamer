@@ -65,30 +65,19 @@ async def get_stream_url(event_path):
                 except:
                     pass
 
-            # If not found, look for iframes
             if not m3u8_url:
-                iframes = await page.query_selector_all("iframe")
-                for iframe in iframes:
-                    src = await iframe.get_attribute("src")
-                    if src:
-                        iframe_page = await context.new_page()
-                        await iframe_page.route("**/*", route_handler)
-                        iframe_url = src if src.startswith("http") else f"{STREAMED_PK_URL}{src}"
+                # Click to bypass popups and trigger play
+                for _ in range(3):
+                    for frame in page.frames:
                         try:
-                            await iframe_page.goto(iframe_url, wait_until="domcontentloaded", timeout=15000)
-                            await iframe_page.wait_for_timeout(3000)
-                            try:
-                                await iframe_page.click("body", timeout=1000)
-                                await iframe_page.wait_for_timeout(2000)
-                            except:
-                                pass
-                        except Exception as iframe_e:
-                            print(f"Iframe load error: {iframe_e}")
-                        finally:
-                            await iframe_page.close()
-                            
-                        if m3u8_url:
-                            break
+                            await frame.click("body", timeout=1000)
+                            await page.wait_for_timeout(1500)
+                            if m3u8_url:
+                                break
+                        except:
+                            pass
+                    if m3u8_url:
+                        break
 
             return {"url": m3u8_url, "headers": m3u8_headers}
         except Exception as e:
