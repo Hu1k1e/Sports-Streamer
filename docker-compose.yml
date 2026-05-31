@@ -5,9 +5,9 @@ services:
     build: .
     container_name: streamed-proxy
     ports:
-      - "5000:5000"
+      - "7694:5000"
     environment:
       # IMPORTANT: If running on a local network for Jellyfin, replace 127.0.0.1 with 
-      # the actual LAN IP of your Docker host (e.g., http://192.168.1.50:5000)
-      - PROXY_HOST=http://127.0.0.1:5000
+      # the actual LAN IP of your Docker host (e.g., http://192.168.1.50:7694)
+      - PROXY_HOST=http://127.0.0.1:7694
     restart: unless-stopped

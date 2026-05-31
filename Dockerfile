@@ -3,7 +3,7 @@ FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy
 # Environment settings
 ENV PYTHONUNBUFFERED=1
 # Replace this dynamically at runtime or in docker-compose.yml
-ENV PROXY_HOST=http://127.0.0.1:5000
+ENV PROXY_HOST=http://127.0.0.1:7694
 
 WORKDIR /app
 

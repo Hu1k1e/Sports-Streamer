@@ -14,7 +14,7 @@ A Dockerized middleware application that scrapes streamed.pk for active live str
 3. Select **Repository** as the build method.
 4. Enter the repository URL: `https://github.com/Hu1k1e/Sports-Streamer`
 5. Crucially, set the **Environment Variables**:
-   - `PROXY_HOST`: Set this to `http://<YOUR_DOCKER_HOST_IP>:5000` (e.g., `http://192.168.1.50:5000`). If left as `127.0.0.1`, Jellyfin will not be able to connect.
+   - `PROXY_HOST`: Set this to `http://<YOUR_DOCKER_HOST_IP>:7694` (e.g., `http://192.168.1.50:7694`). If left as `127.0.0.1`, Jellyfin will not be able to connect.
 6. Click **Deploy the stack**.
 
 ## Jellyfin Setup
@@ -23,7 +23,7 @@ A Dockerized middleware application that scrapes streamed.pk for active live str
 2. Under **Tuner Devices**, click the **+** icon to add a new tuner.
 3. Select **M3U Tuner**.
 4. In the **File or URL** field, enter the URL of your local proxy's playlist endpoint:
-   `http://<YOUR_DOCKER_HOST_IP>:5000/playlist.m3u`
+   `http://<YOUR_DOCKER_HOST_IP>:7694/playlist.m3u`
 5. Save and let Jellyfin refresh the channels. 
 
 > **Note**: Because this acts as a proxy, the container will download the video streams and relay them to Jellyfin. Ensure your host machine has adequate bandwidth. Playwright might take 5-15 seconds to initially spin up a headless browser and extract the stream when you click "Play" in Jellyfin.

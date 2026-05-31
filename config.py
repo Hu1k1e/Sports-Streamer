@@ -12,7 +12,7 @@ SELECTORS = {
 }
 
 # Proxy settings
-PROXY_HOST = os.getenv("PROXY_HOST", "http://127.0.0.1:5000")
+PROXY_HOST = os.getenv("PROXY_HOST", "http://127.0.0.1:7694")
 
 # HTTP Client configurations
 DEFAULT_HEADERS = {
