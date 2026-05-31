@@ -41,8 +41,9 @@ async def get_stream_url(event_path):
         m3u8_url = None
         m3u8_headers = {}
 
-        async def route_handler(route, request):
+        async def route_handler(route):
             nonlocal m3u8_url, m3u8_headers
+            request = route.request
             if ".m3u8" in request.url:
                 m3u8_url = request.url
                 m3u8_headers = request.headers
