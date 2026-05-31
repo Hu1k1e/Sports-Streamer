@@ -1,5 +1,6 @@
 import asyncio
 from playwright.async_api import async_playwright
+from playwright_stealth import stealth_async
 from bs4 import BeautifulSoup
 from config import STREAMED_PK_URL, DEFAULT_HEADERS
 
@@ -8,6 +9,7 @@ async def get_events():
         browser = await p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
         context = await browser.new_context(user_agent=DEFAULT_HEADERS["User-Agent"])
         page = await context.new_page()
+        await stealth_async(page)
         try:
             await page.goto(STREAMED_PK_URL, wait_until="domcontentloaded", timeout=15000)
             content = await page.content()
@@ -35,6 +37,7 @@ async def get_stream_url(event_path):
         browser = await p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
         context = await browser.new_context(user_agent=DEFAULT_HEADERS["User-Agent"])
         page = await context.new_page()
+        await stealth_async(page)
         
         m3u8_url = None
         m3u8_headers = {}
@@ -49,11 +52,19 @@ async def get_stream_url(event_path):
         await page.route("**/*", route_handler)
         
         try:
-            await page.goto(url, wait_until="networkidle", timeout=20000)
+            # Using domcontentloaded because streaming sites have ad trackers that keep network busy
+            await page.goto(url, wait_until="domcontentloaded", timeout=20000)
             
             # Wait to see if m3u8 was caught
-            await page.wait_for_timeout(3000)
+            await page.wait_for_timeout(5000)
             
+            if not m3u8_url:
+                try:
+                    await page.click("video", timeout=1000)
+                    await page.wait_for_timeout(2000)
+                except:
+                    pass
+
             # If not found, look for iframes
             if not m3u8_url:
                 iframes = await page.query_selector_all("iframe")
@@ -61,11 +72,22 @@ async def get_stream_url(event_path):
                     src = await iframe.get_attribute("src")
                     if src:
                         iframe_page = await context.new_page()
+                        await stealth_async(iframe_page)
                         await iframe_page.route("**/*", route_handler)
                         iframe_url = src if src.startswith("http") else f"{STREAMED_PK_URL}{src}"
-                        await iframe_page.goto(iframe_url, wait_until="networkidle", timeout=15000)
-                        await iframe_page.wait_for_timeout(3000)
-                        await iframe_page.close()
+                        try:
+                            await iframe_page.goto(iframe_url, wait_until="domcontentloaded", timeout=15000)
+                            await iframe_page.wait_for_timeout(3000)
+                            try:
+                                await iframe_page.click("body", timeout=1000)
+                                await iframe_page.wait_for_timeout(2000)
+                            except:
+                                pass
+                        except Exception as iframe_e:
+                            print(f"Iframe load error: {iframe_e}")
+                        finally:
+                            await iframe_page.close()
+                            
                         if m3u8_url:
                             break
 

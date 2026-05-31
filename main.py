@@ -1,4 +1,4 @@
-from fastapi import FastAPI, Response
+from fastapi import FastAPI, Response, Request
 from scraper import get_events, get_stream_url
 from proxy import proxy_m3u8, proxy_segment
 from config import PROXY_HOST
@@ -30,12 +30,16 @@ async def generate_playlist():
         
     return Response(content="\n".join(m3u), media_type="application/vnd.apple.mpegurl")
 
-@app.get("/stream/{event_path:path}")
-async def stream_event(event_path: str):
+@app.api_route("/stream/{event_path:path}", methods=["GET", "HEAD"])
+async def stream_event(event_path: str, request: Request):
     """
     Called by Jellyfin when a channel is played.
     We scrape the live M3U8 URL and return a rewritten proxy M3U8.
     """
+    if request.method == "HEAD":
+        # Fast response for Jellyfin probe
+        return Response(status_code=200)
+        
     stream_data = await get_stream_url(event_path)
     
     if not stream_data or not stream_data["url"]:
