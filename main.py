@@ -55,7 +55,7 @@ async def generate_playlist():
         category = event["category"].capitalize()
         
         # M3U format for Live TV
-        m3u.append(f'#EXTINF:-1 tvg-id="{i}" tvg-name="{name}" tvg-logo="" group-title="{category}",{name}')
+        m3u.append(f'#EXTINF:-1 tvg-id="{match_id}" tvg-name="{name}" tvg-logo="" group-title="{category}",{name}')
         stream_url = f"{PROXY_HOST}/stream/{match_id}"
         m3u.append(stream_url)
     
