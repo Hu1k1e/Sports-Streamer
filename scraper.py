@@ -43,6 +43,7 @@ async def get_events():
                     "id": item["id"],
                     "name": item.get("title", "Unknown Event"),
                     "category": item.get("category", "other"),
+                    "date": item.get("date", 0),
                     "sources": item["sources"]
                 })
                 

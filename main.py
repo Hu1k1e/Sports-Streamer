@@ -1,5 +1,6 @@
 import time
 import logging
+from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Response, Request
 from scraper import get_events, get_stream_url
 from proxy import proxy_m3u8, proxy_segment, rewrite_m3u8
@@ -61,6 +62,59 @@ async def generate_playlist():
     
     logger.info("Generated M3U playlist with %d channels", len(events))
     return Response(content="\n".join(m3u), media_type="application/vnd.apple.mpegurl")
+
+
+@app.get("/epg.xml")
+async def generate_epg():
+    events = await get_events()
+    
+    xml = ['<?xml version="1.0" encoding="UTF-8"?>']
+    xml.append('<tv generator-info-name="Streamed.pk Proxy">')
+    
+    # 1. Channels
+    for event in events:
+        match_id = event["id"]
+        name = event["name"]
+        
+        # Escape XML special chars
+        safe_name = name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        
+        xml.append(f'  <channel id="{match_id}">')
+        xml.append(f'    <display-name>{safe_name}</display-name>')
+        xml.append(f'  </channel>')
+        
+    # 2. Programmes
+    for event in events:
+        match_id = event["id"]
+        name = event["name"]
+        category = event["category"].capitalize()
+        safe_name = name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        
+        # Event date is UNIX timestamp in ms
+        timestamp_ms = event.get("date", 0)
+        if timestamp_ms > 0:
+            start_dt = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
+        else:
+            # Fallback to current time if missing
+            start_dt = datetime.now(timezone.utc)
+            
+        # Assume 3 hours duration
+        end_dt = start_dt + timedelta(hours=3)
+        
+        # XMLTV date format: YYYYMMDDHHMMSS +0000
+        start_str = start_dt.strftime("%Y%m%d%H%M%S +0000")
+        end_str = end_dt.strftime("%Y%m%d%H%M%S +0000")
+        
+        xml.append(f'  <programme start="{start_str}" stop="{end_str}" channel="{match_id}">')
+        xml.append(f'    <title lang="en">{safe_name}</title>')
+        xml.append(f'    <desc lang="en">Live {category} stream for {safe_name}</desc>')
+        xml.append(f'    <category lang="en">{category}</category>')
+        xml.append(f'  </programme>')
+        
+    xml.append('</tv>')
+    
+    logger.info("Generated EPG XMLTV with %d channels", len(events))
+    return Response(content="\n".join(xml), media_type="application/xml")
 
 
 @app.api_route("/stream/{event_path:path}", methods=["GET", "HEAD"])
