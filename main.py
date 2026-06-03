@@ -185,8 +185,8 @@ async def stream_event(event_path: str, request: Request):
     return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
 
 
-@app.get("/proxy/m3u8")
-async def handle_proxy_nested_m3u8(url: str):
+@app.api_route("/proxy/m3u8/{filename}", methods=["GET", "HEAD"])
+async def handle_proxy_nested_m3u8(filename: str, url: str):
     """
     Handles nested playlists recursively.
     """
@@ -195,8 +195,8 @@ async def handle_proxy_nested_m3u8(url: str):
     return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
 
 
-@app.get("/proxy/segment")
-async def handle_proxy_segment(url: str):
+@app.api_route("/proxy/segment/{filename}", methods=["GET", "HEAD"])
+async def handle_proxy_segment(filename: str, url: str):
     """
     Streams the actual video file chunk (.ts) to Jellyfin.
     """

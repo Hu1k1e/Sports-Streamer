@@ -1,7 +1,7 @@
 import logging
 import urllib.parse
 from curl_cffi.requests import AsyncSession
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from config import PROXY_HOST
 
 logger = logging.getLogger("proxy")
@@ -55,9 +55,9 @@ def rewrite_m3u8(content: str, base_url: str) -> str:
             encoded_url = urllib.parse.quote(absolute_url, safe='')
             
             if ".m3u8" in absolute_url:
-                rewritten_lines.append(f"{PROXY_HOST}/proxy/m3u8?url={encoded_url}")
+                rewritten_lines.append(f"{PROXY_HOST}/proxy/m3u8/playlist.m3u8?url={encoded_url}")
             else:
-                rewritten_lines.append(f"{PROXY_HOST}/proxy/segment?url={encoded_url}")
+                rewritten_lines.append(f"{PROXY_HOST}/proxy/segment/segment.ts?url={encoded_url}")
         else:
             rewritten_lines.append(line)
     
@@ -103,13 +103,13 @@ async def proxy_segment(url: str, headers: dict):
         
         if response.status_code != 200:
             logger.error("Segment fetch failed: %d for %s", response.status_code, url[:100])
-            return StreamingResponse(iter([b""]), media_type="video/MP2T", status_code=502)
+            return Response(content=b"", media_type="video/MP2T", status_code=502)
         
-        return StreamingResponse(
-            iter([response.content]),
+        return Response(
+            content=response.content,
             media_type="video/MP2T",
             headers={"Content-Length": str(len(response.content))}
         )
     except Exception as e:
         logger.error("Segment stream error: %s", e)
-        return StreamingResponse(iter([b""]), media_type="video/MP2T", status_code=502)
+        return Response(content=b"", media_type="video/MP2T", status_code=502)
