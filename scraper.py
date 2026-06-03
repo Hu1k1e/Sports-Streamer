@@ -48,14 +48,18 @@ async def get_events():
 
 async def get_stream_url(event_path: str):
     """
-    Navigate to the event page via Playwright, passively listen for m3u8
-    network requests, and return the first captured m3u8 URL + headers.
-    Falls back to a JS-based extraction if passive listening fails.
+    Navigate to the event's source-selection page, pick the first stream
+    source link, navigate to the actual stream page, then capture the
+    m3u8 URL from network requests or JS extraction.
+
+    Site flow:
+      /watch/{event}              → source selection page (no player)
+      /watch/{event}/{src}/{num}  → actual stream page (player + iframe)
     """
-    url = f"{STREAMED_PK_URL}/{event_path}"
+    watch_url = f"{STREAMED_PK_URL}/{event_path}"
     logger.info("=== get_stream_url START ===")
     logger.info("Event path: %s", event_path)
-    logger.info("Navigating to: %s", url)
+    logger.info("Step 1: Navigating to source-selection page: %s", watch_url)
 
     async with Stealth().use_async(async_playwright()) as p:
         browser = await p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
@@ -84,18 +88,67 @@ async def get_stream_url(event_path: str):
         page.on("request", on_request)
         
         try:
-            await page.goto(url, wait_until="domcontentloaded", timeout=20000)
-            logger.info("Page loaded (domcontentloaded)")
+            # ── Step 1: Load the source-selection page ──
+            await page.goto(watch_url, wait_until="domcontentloaded", timeout=20000)
+            logger.info("Source-selection page loaded")
+            await page.wait_for_timeout(3000)
             
-            # Phase 1: Wait for the page to naturally trigger the stream
-            logger.info("Phase 1: Waiting 8s for automatic m3u8 request...")
-            await page.wait_for_timeout(8000)
+            # ── Step 2: Find and navigate to the first stream source ──
+            # Source links follow the pattern: /watch/{event}/{source}/{number}
+            # e.g., /watch/roland-garros-french-open-roland-2026/echo/1
+            logger.info("Step 2: Looking for stream source links...")
+            
+            content = await page.content()
+            soup = BeautifulSoup(content, 'html.parser')
+            
+            # Find links that are sub-paths of the current watch page
+            # event_path is like "watch/roland-garros-french-open-roland-2026"
+            # source links are like "/watch/roland-garros-french-open-roland-2026/echo/1"
+            source_link = None
+            event_href_prefix = f"/{event_path}/"
+            
+            for a in soup.find_all('a', href=True):
+                href = a['href']
+                if href.startswith(event_href_prefix):
+                    source_link = href
+                    logger.info("  Found source link: %s", source_link)
+                    break
+            
+            if not source_link:
+                # Fallback: try finding any link deeper than the watch page
+                for a in soup.find_all('a', href=True):
+                    href = a['href']
+                    # Match pattern: /watch/event-name/source/number
+                    if href.startswith('/watch/') and href.count('/') >= 4:
+                        source_link = href
+                        logger.info("  Found source link (fallback): %s", source_link)
+                        break
+            
+            if not source_link:
+                logger.error("No stream source links found on the source-selection page")
+                logger.warning("Page title: %s", await page.title())
+                # Dump all links for debugging
+                all_links = [a['href'] for a in soup.find_all('a', href=True) if a['href'].startswith('/watch/')]
+                logger.warning("All /watch/ links found: %s", all_links)
+                return {"url": None, "headers": {}}
+            
+            # Navigate to the actual stream page
+            stream_page_url = f"{STREAMED_PK_URL}{source_link}"
+            logger.info("Step 3: Navigating to stream page: %s", stream_page_url)
+            await page.goto(stream_page_url, wait_until="domcontentloaded", timeout=20000)
+            logger.info("Stream page loaded")
+            
+            # ── Step 3: Wait for m3u8 on the actual stream page ──
+            
+            # Phase 1: Wait for the page/iframe to naturally trigger the stream
+            logger.info("Phase 1: Waiting 10s for automatic m3u8 request...")
+            await page.wait_for_timeout(10000)
             
             if m3u8_url:
-                logger.info("Phase 1 success — m3u8 captured during page load")
+                logger.info("Phase 1 success — m3u8 captured during stream page load")
                 return {"url": m3u8_url, "headers": m3u8_headers}
             
-            # Phase 2: Try clicking the video element directly
+            # Phase 2: Try clicking video/player elements
             logger.info("Phase 2: Trying to click video/player elements...")
             click_selectors = ["video", ".player", "[class*='player']", ".video-container", "iframe"]
             for selector in click_selectors:
@@ -139,7 +192,7 @@ async def get_stream_url(event_path: str):
             js_m3u8 = await _extract_m3u8_via_js(page)
             if js_m3u8:
                 logger.info("Phase 4 success — found m3u8 via JS: %s", js_m3u8[:150])
-                return {"url": js_m3u8, "headers": {"Referer": url, "User-Agent": DEFAULT_HEADERS["User-Agent"]}}
+                return {"url": js_m3u8, "headers": {"Referer": stream_page_url, "User-Agent": DEFAULT_HEADERS["User-Agent"]}}
             
             # All phases failed
             logger.warning("=== ALL PHASES FAILED ===")
