@@ -1,5 +1,6 @@
 import asyncio
 import logging
+import re
 import httpx
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
@@ -39,9 +40,13 @@ async def get_events():
                 if not item.get("sources"):
                     continue
                     
+                raw_title = item.get("title", "Unknown Event")
+                # Remove leading 4-digit year like "2026 " from the title
+                clean_title = re.sub(r'^\d{4}\s+', '', raw_title)
+                    
                 events.append({
                     "id": item["id"],
-                    "name": item.get("title", "Unknown Event"),
+                    "name": clean_title,
                     "category": item.get("category", "other"),
                     "date": item.get("date", 0),
                     "sources": item["sources"]
