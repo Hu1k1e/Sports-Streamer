@@ -49,6 +49,7 @@ async def get_events():
                     "name": clean_title,
                     "category": item.get("category", "other"),
                     "date": item.get("date", 0),
+                    "poster": item.get("poster", ""),
                     "sources": item["sources"]
                 })
                 

@@ -6,7 +6,7 @@ from fastapi import FastAPI, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from scraper import get_events, get_stream_url
 from proxy import proxy_m3u8, proxy_segment, rewrite_m3u8
-from config import PROXY_HOST, STREAM_CACHE_TTL
+from config import PROXY_HOST, STREAM_CACHE_TTL, STREAMED_PK_URL
 
 logger = logging.getLogger("main")
 
@@ -64,9 +64,12 @@ async def generate_playlist():
         name = event["name"]
         match_id = event["id"]
         category = event["category"].capitalize()
+        poster = event.get("poster", "")
+        
+        logo_attr = f' tvg-logo="{STREAMED_PK_URL}{poster}"' if poster else ' tvg-logo=""'
         
         # M3U format for Live TV
-        m3u.append(f'#EXTINF:-1 tvg-id="{match_id}" tvg-name="{name}" tvg-logo="" group-title="{category}",{name}')
+        m3u.append(f'#EXTINF:-1 tvg-id="{match_id}" tvg-name="{name}"{logo_attr} group-title="{category}",{name}')
         stream_url = f"{PROXY_HOST}/stream/{match_id}"
         m3u.append(stream_url)
     
@@ -85,12 +88,15 @@ async def generate_epg():
     for event in events:
         match_id = event["id"]
         name = event["name"]
+        poster = event.get("poster", "")
         
         # Escape XML special chars
         safe_name = name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
         
         xml.append(f'  <channel id="{match_id}">')
         xml.append(f'    <display-name>{safe_name}</display-name>')
+        if poster:
+            xml.append(f'    <icon src="{STREAMED_PK_URL}{poster}" />')
         xml.append(f'  </channel>')
         
     # 2. Programmes
