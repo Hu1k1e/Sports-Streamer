@@ -1,5 +1,6 @@
 import time
 import logging
+import base64
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Response, Request
 from scraper import get_events, get_stream_url
@@ -185,21 +186,19 @@ async def stream_event(event_path: str, request: Request):
     return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
 
 
-@app.api_route("/proxy/m3u8/{filename}", methods=["GET", "HEAD"])
-async def handle_proxy_nested_m3u8(filename: str, url: str):
-    """
-    Handles nested playlists recursively.
-    """
+@app.api_route("/proxy/m3u8/{b64_url}.m3u8", methods=["GET", "HEAD"])
+async def handle_proxy_m3u8(b64_url: str):
+    b64_url += "=" * ((4 - len(b64_url) % 4) % 4)
+    url = base64.urlsafe_b64decode(b64_url).decode('utf-8')
     headers = stream_headers_cache.get("latest", {})
     m3u8_content = await proxy_m3u8(url, headers)
     return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
 
 
-@app.api_route("/proxy/segment/{filename}", methods=["GET", "HEAD"])
-async def handle_proxy_segment(filename: str, url: str):
-    """
-    Streams the actual video file chunk (.ts) to Jellyfin.
-    """
+@app.api_route("/proxy/segment/{b64_url}.ts", methods=["GET", "HEAD"])
+async def handle_proxy_segment(b64_url: str):
+    b64_url += "=" * ((4 - len(b64_url) % 4) % 4)
+    url = base64.urlsafe_b64decode(b64_url).decode('utf-8')
     headers = stream_headers_cache.get("latest", {})
     return await proxy_segment(url, headers)
 

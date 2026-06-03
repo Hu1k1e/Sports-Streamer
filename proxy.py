@@ -1,4 +1,5 @@
 import logging
+import base64
 import urllib.parse
 from curl_cffi.requests import AsyncSession
 from fastapi.responses import StreamingResponse, Response
@@ -59,12 +60,14 @@ def rewrite_m3u8(content: str, base_url: str) -> str:
         else:
             # Segment or nested playlist URL
             absolute_url = urllib.parse.urljoin(base_url, line)
-            encoded_url = urllib.parse.quote(absolute_url, safe='')
+            
+            # Base64 encode the url so FFmpeg doesn't see .jpg in the path and get confused
+            b64_url = base64.urlsafe_b64encode(absolute_url.encode('utf-8')).decode('utf-8')
             
             if ".m3u8" in absolute_url:
-                rewritten_lines.append(f"{PROXY_HOST}/proxy/m3u8/playlist.m3u8?url={encoded_url}")
+                rewritten_lines.append(f"{PROXY_HOST}/proxy/m3u8/{b64_url}.m3u8")
             else:
-                rewritten_lines.append(f"{PROXY_HOST}/proxy/segment/segment.ts?url={encoded_url}")
+                rewritten_lines.append(f"{PROXY_HOST}/proxy/segment/{b64_url}.ts")
     
     logger.info("M3U8 rewritten: %d lines", len(rewritten_lines))
     return "\n".join(rewritten_lines)
