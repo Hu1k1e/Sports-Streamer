@@ -3,6 +3,7 @@ import logging
 import base64
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Response, Request
+from fastapi.middleware.cors import CORSMiddleware
 from scraper import get_events, get_stream_url
 from proxy import proxy_m3u8, proxy_segment, rewrite_m3u8
 from config import PROXY_HOST, STREAM_CACHE_TTL
@@ -10,6 +11,14 @@ from config import PROXY_HOST, STREAM_CACHE_TTL
 logger = logging.getLogger("main")
 
 app = FastAPI(title="Streamed.pk IPTV Proxy")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # In-memory cache: { event_path: {"url": ..., "headers": ..., "timestamp": ...} }
 stream_cache = {}
