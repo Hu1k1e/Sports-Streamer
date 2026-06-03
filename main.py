@@ -108,14 +108,20 @@ async def generate_epg():
         
         # Event date is UNIX timestamp in ms
         timestamp_ms = event.get("date", 0)
+        now = datetime.now(timezone.utc)
+        
         if timestamp_ms > 0:
             start_dt = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
         else:
             # Fallback to current time if missing
-            start_dt = datetime.now(timezone.utc)
+            start_dt = now
             
-        # Assume 3 hours duration
-        end_dt = start_dt + timedelta(hours=3)
+        # If the event started in the past but is still listed in the API, it's still live!
+        # Extend the end time into the future so the EPG displays it as "On Now".
+        if start_dt < now:
+            end_dt = max(start_dt + timedelta(hours=6), now + timedelta(hours=4))
+        else:
+            end_dt = start_dt + timedelta(hours=6)
         
         # XMLTV date format: YYYYMMDDHHMMSS +0000
         start_str = start_dt.strftime("%Y%m%d%H%M%S +0000")
