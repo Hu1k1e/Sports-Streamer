@@ -68,6 +68,7 @@ async def get_stream_url(event_path: str):
         
         m3u8_url = None
         m3u8_headers = {}
+        m3u8_content = None
         all_requests_log = []
 
         # --- Passive listener: observe requests without interfering ---
@@ -85,7 +86,20 @@ async def get_stream_url(event_path: str):
                 logger.info("  ✓ Captured m3u8 URL: %s", req_url[:150])
                 logger.debug("  ✓ Headers: %s", m3u8_headers)
 
+        # --- Response listener: capture the m3u8 body so we don't need to refetch ---
+        async def on_response(response):
+            nonlocal m3u8_content
+            if ".m3u8" in response.url and m3u8_content is None:
+                try:
+                    body = await response.text()
+                    if body and "#EXTM3U" in body:
+                        m3u8_content = body
+                        logger.info("  ✓ Captured m3u8 response body (%d bytes)", len(body))
+                except Exception as e:
+                    logger.debug("  Could not read m3u8 response body: %s", e)
+
         page.on("request", on_request)
+        page.on("response", on_response)
         
         try:
             # ── Step 1: Load the source-selection page ──
@@ -146,7 +160,7 @@ async def get_stream_url(event_path: str):
             
             if m3u8_url:
                 logger.info("Phase 1 success — m3u8 captured during stream page load")
-                return {"url": m3u8_url, "headers": m3u8_headers}
+                return {"url": m3u8_url, "headers": m3u8_headers, "content": m3u8_content}
             
             # Phase 2: Try clicking video/player elements
             logger.info("Phase 2: Trying to click video/player elements...")
@@ -165,7 +179,7 @@ async def get_stream_url(event_path: str):
             
             if m3u8_url:
                 logger.info("Phase 2 success — m3u8 captured after element click")
-                return {"url": m3u8_url, "headers": m3u8_headers}
+                return {"url": m3u8_url, "headers": m3u8_headers, "content": m3u8_content}
             
             # Phase 3: Click through iframes and body elements
             logger.info("Phase 3: Clicking through frames...")
@@ -185,14 +199,14 @@ async def get_stream_url(event_path: str):
             
             if m3u8_url:
                 logger.info("Phase 3 success — m3u8 captured after frame clicks")
-                return {"url": m3u8_url, "headers": m3u8_headers}
+                return {"url": m3u8_url, "headers": m3u8_headers, "content": m3u8_content}
             
             # Phase 4: JavaScript-based fallback — search for m3u8 URLs in DOM
             logger.info("Phase 4: JS-based m3u8 extraction fallback...")
             js_m3u8 = await _extract_m3u8_via_js(page)
             if js_m3u8:
                 logger.info("Phase 4 success — found m3u8 via JS: %s", js_m3u8[:150])
-                return {"url": js_m3u8, "headers": {"Referer": stream_page_url, "User-Agent": DEFAULT_HEADERS["User-Agent"]}}
+                return {"url": js_m3u8, "headers": {"Referer": stream_page_url, "User-Agent": DEFAULT_HEADERS["User-Agent"]}, "content": None}
             
             # All phases failed
             logger.warning("=== ALL PHASES FAILED ===")
@@ -207,7 +221,7 @@ async def get_stream_url(event_path: str):
             for i, frame in enumerate(page.frames):
                 logger.warning("  Frame %d: %s", i, frame.url[:120])
             
-            return {"url": None, "headers": {}}
+            return {"url": None, "headers": {}, "content": None}
             
         except Exception as e:
             logger.error("Error in get_stream_url: %s", e, exc_info=True)

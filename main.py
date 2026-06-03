@@ -2,7 +2,7 @@ import time
 import logging
 from fastapi import FastAPI, Response, Request
 from scraper import get_events, get_stream_url
-from proxy import proxy_m3u8, proxy_segment
+from proxy import proxy_m3u8, proxy_segment, rewrite_m3u8
 from config import PROXY_HOST, STREAM_CACHE_TTL
 
 logger = logging.getLogger("main")
@@ -108,6 +108,7 @@ async def stream_event(event_path: str, request: Request):
     
     url = stream_data["url"]
     headers = stream_data["headers"]
+    captured_content = stream_data.get("content")
     logger.info("GET: scraper found m3u8: %s", url[:120])
     
     # Cache the result
@@ -116,7 +117,14 @@ async def stream_event(event_path: str, request: Request):
     # Store headers globally for segment proxying later
     stream_headers_cache["latest"] = headers
     
-    m3u8_content = await proxy_m3u8(url, headers)
+    # Use captured content if available (avoids refetch + TLS fingerprint issues)
+    if captured_content:
+        logger.info("GET: using captured m3u8 content (%d bytes)", len(captured_content))
+        m3u8_content = rewrite_m3u8(captured_content, url)
+    else:
+        logger.info("GET: no captured content, fetching via proxy")
+        m3u8_content = await proxy_m3u8(url, headers)
+    
     if not m3u8_content:
         logger.error("GET: proxy_m3u8 returned empty content for %s", url[:120])
         return Response(content="Failed to fetch stream playlist", status_code=502)
