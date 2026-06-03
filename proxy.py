@@ -49,7 +49,14 @@ def rewrite_m3u8(content: str, base_url: str) -> str:
     
     for line in lines:
         line = line.strip()
-        if line and not line.startswith('#'):
+        if not line:
+            continue
+            
+        if line.startswith('#'):
+            if line.startswith('#EXT-X-STREAM-INF:') and 'CODECS=' not in line:
+                line = line + ',CODECS="avc1.640028,mp4a.40.2"'
+            rewritten_lines.append(line)
+        else:
             # Segment or nested playlist URL
             absolute_url = urllib.parse.urljoin(base_url, line)
             encoded_url = urllib.parse.quote(absolute_url, safe='')
@@ -58,8 +65,6 @@ def rewrite_m3u8(content: str, base_url: str) -> str:
                 rewritten_lines.append(f"{PROXY_HOST}/proxy/m3u8/playlist.m3u8?url={encoded_url}")
             else:
                 rewritten_lines.append(f"{PROXY_HOST}/proxy/segment/segment.ts?url={encoded_url}")
-        else:
-            rewritten_lines.append(line)
     
     logger.info("M3U8 rewritten: %d lines", len(rewritten_lines))
     return "\n".join(rewritten_lines)
