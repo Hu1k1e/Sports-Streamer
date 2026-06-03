@@ -98,17 +98,20 @@ async def proxy_segment(url: str, headers: dict):
     try:
         proxy_headers = _build_proxy_headers(headers)
         
-        async with AsyncSession(impersonate="chrome") as session:
-            response = await session.get(url, headers=proxy_headers, timeout=15)
-        
-        if response.status_code != 200:
-            logger.error("Segment fetch failed: %d for %s", response.status_code, url[:100])
-            return Response(content=b"", media_type="video/MP2T", status_code=502)
-        
-        return Response(
-            content=response.content,
-            media_type="video/MP2T",
-            headers={"Content-Length": str(len(response.content))}
+        async def stream_generator():
+            async with AsyncSession(impersonate="chrome") as session:
+                response = await session.get(url, headers=proxy_headers, stream=True, timeout=15)
+                if response.status_code != 200:
+                    logger.error("Segment fetch failed: %d for %s", response.status_code, url[:100])
+                    yield b""
+                    return
+                
+                async for chunk in response.aiter_content():
+                    yield chunk
+
+        return StreamingResponse(
+            stream_generator(),
+            media_type="video/MP2T"
         )
     except Exception as e:
         logger.error("Segment stream error: %s", e)
