@@ -2,6 +2,7 @@ import logging
 import urllib.parse
 from curl_cffi.requests import AsyncSession
 from fastapi.responses import StreamingResponse
+from config import PROXY_HOST
 
 logger = logging.getLogger("proxy")
 
@@ -54,9 +55,9 @@ def rewrite_m3u8(content: str, base_url: str) -> str:
             encoded_url = urllib.parse.quote(absolute_url, safe='')
             
             if ".m3u8" in absolute_url:
-                rewritten_lines.append(f"/proxy/m3u8?url={encoded_url}")
+                rewritten_lines.append(f"{PROXY_HOST}/proxy/m3u8?url={encoded_url}")
             else:
-                rewritten_lines.append(f"/proxy/segment?url={encoded_url}")
+                rewritten_lines.append(f"{PROXY_HOST}/proxy/segment?url={encoded_url}")
         else:
             rewritten_lines.append(line)
     
