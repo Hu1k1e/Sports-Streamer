@@ -51,13 +51,12 @@ async def generate_playlist():
     m3u = ["#EXTM3U"]
     for i, event in enumerate(events):
         name = event["name"]
-        path = event["path"]
+        match_id = event["id"]
+        category = event["category"].capitalize()
         
         # M3U format for Live TV
-        # path already looks like "watch/ppv-brazil-vs-panama"
-        # FastAPI's {event_path:path} captures everything after /stream/
-        m3u.append(f'#EXTINF:-1 tvg-id="{i}" tvg-name="{name}" tvg-logo="" group-title="Live Sports",{name}')
-        stream_url = f"{PROXY_HOST}/stream/{path}"
+        m3u.append(f'#EXTINF:-1 tvg-id="{i}" tvg-name="{name}" tvg-logo="" group-title="{category}",{name}')
+        stream_url = f"{PROXY_HOST}/stream/{match_id}"
         m3u.append(stream_url)
     
     logger.info("Generated M3U playlist with %d channels", len(events))
