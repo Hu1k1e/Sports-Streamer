@@ -14,10 +14,6 @@ STREAM_CACHE_TTL = int(os.getenv("STREAM_CACHE_TTL", "120"))
 # we don't know the exact end time
 EPG_DEFAULT_DURATION_HOURS = int(os.getenv("EPG_DEFAULT_DURATION_HOURS", "4"))
 
-# Maximum duration in hours to consider an event as valid after its start time
-# if it is no longer marked as live by the API
-EVENT_MAX_DURATION_HOURS = int(os.getenv("EVENT_MAX_DURATION_HOURS", "6"))
-
 # Enable verbose diagnostic logging for scraper and proxy
 DEBUG_LOGGING = os.getenv("DEBUG_LOGGING", "true").lower() in ("true", "1", "yes")
 

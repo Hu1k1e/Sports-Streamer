@@ -146,12 +146,10 @@ async def get_all_events() -> list[dict]:
 # ---------------------------------------------------------------------------
 # Shared event parser
 # ---------------------------------------------------------------------------
-from config import EVENT_MAX_DURATION_HOURS
 
 def _parse_events(data: list, is_live: bool = False, live_ids: set = None) -> list[dict]:
     """Parse raw API match data into our internal event dicts."""
     events = []
-    now_ms = int(time.time() * 1000)
     
     for item in data:
         if not item.get("sources"):
@@ -161,10 +159,6 @@ def _parse_events(data: list, is_live: bool = False, live_ids: set = None) -> li
         event_is_live = is_live or (live_ids is not None and event_id in live_ids)
         event_date = item.get("date", 0)
 
-        # Filter out events that concluded (started more than max duration ago)
-        # But keep them if they are explicitly marked as live by the API
-        if not event_is_live and event_date > 0 and (now_ms - event_date) > (EVENT_MAX_DURATION_HOURS * 3600 * 1000):
-            continue
         raw_title = item.get("title", "Unknown Event")
         # Remove leading 4-digit year like "2026 " from the title
         clean_title = re.sub(r'^\d{4}\s+', '', raw_title)
@@ -226,14 +220,6 @@ async def _get_embed_url(match_id: str):
     if not match:
         logger.error("Match %s not found in API", match_id)
         return None
-
-    # Do not attempt to resolve streams for concluded events to avoid random reused streams
-    if not match.get("is_live"):
-        now_ms = int(time.time() * 1000)
-        event_date = match.get("date", 0)
-        if event_date > 0 and (now_ms - event_date) > (EVENT_MAX_DURATION_HOURS * 3600 * 1000):
-            logger.error("Match %s is expired and no longer live", match_id)
-            return None
 
     sources = match["sources"]
     logger.info("Found %d sources for match %s", len(sources), match_id)
