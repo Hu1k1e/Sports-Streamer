@@ -19,19 +19,31 @@ API_BASE_URL = f"{STREAMED_PK_URL}/api"
 # In-memory cache for API responses (avoids hammering the API on every
 # Jellyfin playlist / EPG refresh).  TTL = 15 minutes.
 # ---------------------------------------------------------------------------
-_cache = {}
+_cache: dict[str, dict] = {}
 _CACHE_TTL = 900  # 15 minutes in seconds
 
 
+def _evict_expired():
+    """Remove all expired entries from the API cache."""
+    now = time.time()
+    expired = [k for k, v in _cache.items() if (now - v["ts"]) >= _CACHE_TTL]
+    for k in expired:
+        del _cache[k]
+    if expired:
+        logger.debug("Evicted %d expired API cache entries: %s", len(expired), expired)
+
+
 def _get_cached(key: str):
+    _evict_expired()
     entry = _cache.get(key)
-    if entry and (time.time() - entry["ts"]) < _CACHE_TTL:
+    if entry:
         logger.debug("API cache HIT for '%s' (age %.0fs)", key, time.time() - entry["ts"])
         return entry["data"]
     return None
 
 
 def _set_cached(key: str, data):
+    _evict_expired()
     _cache[key] = {"data": data, "ts": time.time()}
 
 

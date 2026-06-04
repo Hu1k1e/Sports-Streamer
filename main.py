@@ -21,33 +21,51 @@ app.add_middleware(
 )
 
 # In-memory cache: { event_path: {"url": ..., "headers": ..., "timestamp": ...} }
-stream_cache = {}
+stream_cache: dict[str, dict] = {}
+MAX_STREAM_CACHE_SIZE = 50  # hard cap to prevent unbounded growth
 
-# Simple in-memory cache to store the latest headers 
-# because segment proxying requests don't know the event origin.
-stream_headers_cache = {}
+# Per-stream header cache for segment proxying.
+# Also stores a "latest" key as fallback.
+stream_headers_cache: dict[str, dict] = {}
+
+
+def _evict_expired_streams():
+    """Remove all expired entries from the stream cache."""
+    now = time.time()
+    expired = [k for k, v in stream_cache.items() if (now - v["timestamp"]) >= STREAM_CACHE_TTL]
+    for k in expired:
+        stream_cache.pop(k, None)
+        stream_headers_cache.pop(k, None)
+    if expired:
+        logger.debug("Evicted %d expired stream cache entries", len(expired))
 
 
 def _get_cached_stream(event_path: str):
     """Return cached stream data if still valid, else None."""
+    _evict_expired_streams()
     entry = stream_cache.get(event_path)
     if entry and (time.time() - entry["timestamp"]) < STREAM_CACHE_TTL:
         logger.debug("Cache HIT for '%s' (age: %.0fs)", event_path, time.time() - entry["timestamp"])
         return {"url": entry["url"], "headers": entry["headers"]}
-    if entry:
-        logger.debug("Cache EXPIRED for '%s'", event_path)
-        del stream_cache[event_path]
+    # Entry missing or expired (already cleaned by evict)
     return None
 
 
 def _set_cached_stream(event_path: str, url: str, headers: dict):
-    """Cache a successful stream result."""
+    """Cache a successful stream result. Evicts old entries if over capacity."""
+    _evict_expired_streams()
+    # If at capacity, drop the oldest entry
+    while len(stream_cache) >= MAX_STREAM_CACHE_SIZE:
+        oldest_key = min(stream_cache, key=lambda k: stream_cache[k]["timestamp"])
+        logger.debug("Stream cache full (%d), evicting oldest: %s", len(stream_cache), oldest_key)
+        stream_cache.pop(oldest_key, None)
+        stream_headers_cache.pop(oldest_key, None)
     stream_cache[event_path] = {
         "url": url,
         "headers": headers,
         "timestamp": time.time()
     }
-    logger.debug("Cached stream for '%s' (TTL: %ds)", event_path, STREAM_CACHE_TTL)
+    logger.debug("Cached stream for '%s' (TTL: %ds, total: %d)", event_path, STREAM_CACHE_TTL, len(stream_cache))
 
 
 def _xml_escape(text: str) -> str:
@@ -191,6 +209,7 @@ async def stream_event(event_path: str, request: Request):
     cached = _get_cached_stream(event_path)
     if cached and cached["url"]:
         logger.info("GET: serving from cache: %s", cached["url"][:120])
+        stream_headers_cache[event_path] = cached["headers"]
         stream_headers_cache["latest"] = cached["headers"]
         m3u8_content = await proxy_m3u8(cached["url"], cached["headers"])
         if m3u8_content:
@@ -215,7 +234,8 @@ async def stream_event(event_path: str, request: Request):
     # Cache the result
     _set_cached_stream(event_path, url, headers)
     
-    # Store headers globally for segment proxying later
+    # Store headers for segment proxying (per-stream + latest fallback)
+    stream_headers_cache[event_path] = headers
     stream_headers_cache["latest"] = headers
     
     # Use captured content if available (avoids refetch + TLS fingerprint issues)
