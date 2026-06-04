@@ -3,3 +3,6 @@ __pycache__/
 .env
 Instructions.md
 project_specs.md
+test.ts
+test_api.py
+matches.json

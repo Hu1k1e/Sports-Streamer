@@ -4,9 +4,9 @@ import base64
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
-from scraper import get_events, get_stream_url
+from scraper import get_live_events, get_all_events, get_sports, get_stream_url
 from proxy import proxy_m3u8, proxy_segment, rewrite_m3u8
-from config import PROXY_HOST, STREAM_CACHE_TTL, STREAMED_PK_URL
+from config import PROXY_HOST, STREAM_CACHE_TTL, STREAMED_PK_URL, EPG_DEFAULT_DURATION_HOURS
 
 logger = logging.getLogger("main")
 
@@ -50,6 +50,16 @@ def _set_cached_stream(event_path: str, url: str, headers: dict):
     logger.debug("Cached stream for '%s' (TTL: %ds)", event_path, STREAM_CACHE_TTL)
 
 
+def _xml_escape(text: str) -> str:
+    """Escape XML special characters."""
+    return (text
+            .replace("&", "&amp;")
+            .replace("<", "&lt;")
+            .replace(">", "&gt;")
+            .replace('"', "&quot;")
+            .replace("'", "&apos;"))
+
+
 @app.get("/")
 def read_root():
     return {"status": "ok", "message": "Streamed.pk IPTV Proxy is running. Use /playlist.m3u for Jellyfin."}
@@ -57,29 +67,42 @@ def read_root():
 
 @app.get("/playlist.m3u")
 async def generate_playlist():
-    events = await get_events()
+    """
+    Generate M3U playlist with ONLY currently live streams.
+    Uses /api/matches/live — refreshed every 15 minutes via cache.
+    """
+    events = await get_live_events()
+    sports = await get_sports()
     
     m3u = ["#EXTM3U"]
-    for i, event in enumerate(events):
+    for event in events:
         name = event["name"]
         match_id = event["id"]
-        category = event["category"].capitalize()
-        poster = event.get("poster", "")
+        category_id = event.get("category", "other")
+        # Use the display name from /api/sports, fallback to capitalized id
+        group_title = sports.get(category_id, category_id.capitalize())
+        logo = event.get("logo_url", "")
         
-        logo_attr = f' tvg-logo="{STREAMED_PK_URL}{poster}"' if poster else ' tvg-logo=""'
-        
-        # M3U format for Live TV
-        m3u.append(f'#EXTINF:-1 tvg-id="{match_id}" tvg-name="{name}"{logo_attr} group-title="{category}",{name}')
+        m3u.append(
+            f'#EXTINF:-1 tvg-id="{match_id}" tvg-name="{name}"'
+            f' tvg-logo="{logo}" group-title="{group_title}",{name}'
+        )
         stream_url = f"{PROXY_HOST}/stream/{match_id}"
         m3u.append(stream_url)
     
-    logger.info("Generated M3U playlist with %d channels", len(events))
+    logger.info("Generated M3U playlist with %d live channels", len(events))
     return Response(content="\n".join(m3u), media_type="application/vnd.apple.mpegurl")
 
 
 @app.get("/epg.xml")
 async def generate_epg():
-    events = await get_events()
+    """
+    Generate XMLTV EPG guide.
+    Uses /api/matches/all for the full schedule.
+    Live events get their end time extended so they show as 'On Now'.
+    """
+    events = await get_all_events()
+    sports = await get_sports()
     
     xml = ['<?xml version="1.0" encoding="UTF-8"?>']
     xml.append('<tv generator-info-name="Streamed.pk Proxy">')
@@ -88,40 +111,43 @@ async def generate_epg():
     for event in events:
         match_id = event["id"]
         name = event["name"]
-        poster = event.get("poster", "")
-        
-        # Escape XML special chars
-        safe_name = name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        safe_name = _xml_escape(name)
+        logo = event.get("logo_url", "")
         
         xml.append(f'  <channel id="{match_id}">')
         xml.append(f'    <display-name>{safe_name}</display-name>')
-        if poster:
-            xml.append(f'    <icon src="{STREAMED_PK_URL}{poster}" />')
+        if logo:
+            xml.append(f'    <icon src="{_xml_escape(logo)}" />')
         xml.append(f'  </channel>')
         
     # 2. Programmes
+    now = datetime.now(timezone.utc)
     for event in events:
         match_id = event["id"]
         name = event["name"]
-        category = event["category"].capitalize()
-        safe_name = name.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+        category_id = event.get("category", "other")
+        group_title = sports.get(category_id, category_id.capitalize())
+        safe_name = _xml_escape(name)
+        is_live = event.get("is_live", False)
         
         # Event date is UNIX timestamp in ms
         timestamp_ms = event.get("date", 0)
-        now = datetime.now(timezone.utc)
         
         if timestamp_ms > 0:
             start_dt = datetime.fromtimestamp(timestamp_ms / 1000.0, tz=timezone.utc)
         else:
-            # Fallback to current time if missing
             start_dt = now
             
-        # If the event started in the past but is still listed in the API, it's still live!
-        # Extend the end time into the future so the EPG displays it as "On Now".
-        if start_dt < now:
-            end_dt = max(start_dt + timedelta(hours=6), now + timedelta(hours=4))
+        # Determine end time
+        if is_live and start_dt < now:
+            # Event is currently live — extend end to at least 2h from now
+            # so it stays visible as "On Now" in Jellyfin
+            end_dt = max(
+                start_dt + timedelta(hours=EPG_DEFAULT_DURATION_HOURS),
+                now + timedelta(hours=2)
+            )
         else:
-            end_dt = start_dt + timedelta(hours=6)
+            end_dt = start_dt + timedelta(hours=EPG_DEFAULT_DURATION_HOURS)
         
         # XMLTV date format: YYYYMMDDHHMMSS +0000
         start_str = start_dt.strftime("%Y%m%d%H%M%S +0000")
@@ -129,8 +155,8 @@ async def generate_epg():
         
         xml.append(f'  <programme start="{start_str}" stop="{end_str}" channel="{match_id}">')
         xml.append(f'    <title lang="en">{safe_name}</title>')
-        xml.append(f'    <desc lang="en">Live {category} stream for {safe_name}</desc>')
-        xml.append(f'    <category lang="en">{category}</category>')
+        xml.append(f'    <desc lang="en">Live {group_title} stream for {safe_name}</desc>')
+        xml.append(f'    <category lang="en">{_xml_escape(group_title)}</category>')
         xml.append(f'  </programme>')
         
     xml.append('</tv>')
