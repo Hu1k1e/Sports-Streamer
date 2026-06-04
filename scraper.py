@@ -119,12 +119,12 @@ async def get_all_events() -> list[dict]:
     if cached is not None:
         return cached
 
-    logger.info("Fetching all events from %s/matches/all", API_BASE_URL)
+    logger.info("Fetching all events from %s/matches/all-today", API_BASE_URL)
     async with httpx.AsyncClient(timeout=10) as client:
         try:
             # Fetch both endpoints concurrently so we can tag live status
             response_all, response_live = await asyncio.gather(
-                client.get(f"{API_BASE_URL}/matches/all"),
+                client.get(f"{API_BASE_URL}/matches/all-today"),
                 client.get(f"{API_BASE_URL}/matches/live")
             )
             response_all.raise_for_status()
@@ -238,36 +238,50 @@ async def _get_embed_url(match_id: str):
     sources = match["sources"]
     logger.info("Found %d sources for match %s", len(sources), match_id)
 
-    # Sort sources by preference
-    sorted_sources = sorted(
-        sources,
-        key=lambda s: PREFERRED_SOURCES.index(s["source"]) if s["source"] in PREFERRED_SOURCES else 999
-    )
-
     async with httpx.AsyncClient(timeout=10) as client:
-        for src in sorted_sources:
-            try:
-                src_name = src["source"]
-                src_id = src["id"]
-                logger.debug("Trying source %s for match %s", src_name, match_id)
-                response = await client.get(f"{API_BASE_URL}/stream/{src_name}/{src_id}")
-                if response.status_code == 200:
+        # Fetch all streams concurrently from all sources
+        tasks = []
+        for src in sources:
+            src_name = src["source"]
+            src_id = src["id"]
+            tasks.append(client.get(f"{API_BASE_URL}/stream/{src_name}/{src_id}"))
+        
+        responses = await asyncio.gather(*tasks, return_exceptions=True)
+        
+        all_streams = []
+        for response in responses:
+            if isinstance(response, Exception):
+                continue
+            if response.status_code == 200:
+                try:
                     streams = response.json()
-                    if streams and len(streams) > 0:
-                        # Find HD English stream if possible
-                        hd_en = [s for s in streams if s.get("hd") and s.get("language", "").lower() == "english"]
-                        hd_any = [s for s in streams if s.get("hd")]
-                        en_any = [s for s in streams if s.get("language", "").lower() == "english"]
+                    all_streams.extend(streams)
+                except Exception:
+                    pass
 
-                        selected = (hd_en or hd_any or en_any or streams)[0]
-                        embed_url = selected.get("embedUrl")
-                        if embed_url:
-                            logger.info("Got embed URL from source %s (stream #%s, HD=%s, lang=%s): %s",
-                                        src_name, selected.get("streamNo"), selected.get("hd"),
-                                        selected.get("language"), embed_url)
-                            return embed_url
-            except Exception as e:
-                logger.debug("Failed to get stream from source %s: %s", src.get("source"), e)
+        if not all_streams:
+            logger.error("No streams found across %d sources for match %s", len(sources), match_id)
+            return None
+
+        # Sort all streams by:
+        # 1. Viewers (descending)
+        # 2. HD (True first)
+        # 3. English language (True first)
+        def sort_key(stream):
+            viewers = stream.get("viewers", 0)
+            hd = stream.get("hd", False)
+            is_en = stream.get("language", "").lower() == "english"
+            return (viewers, hd, is_en)
+
+        sorted_streams = sorted(all_streams, key=sort_key, reverse=True)
+        selected = sorted_streams[0]
+        
+        embed_url = selected.get("embedUrl")
+        if embed_url:
+            logger.info("Selected stream from %s (viewers=%s, HD=%s, lang=%s): %s",
+                        selected.get("source"), selected.get("viewers"), selected.get("hd"),
+                        selected.get("language"), embed_url)
+            return embed_url
 
     return None
 
