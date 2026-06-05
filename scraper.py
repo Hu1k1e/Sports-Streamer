@@ -110,6 +110,25 @@ async def get_live_events() -> list[dict]:
 # ---------------------------------------------------------------------------
 # All events  (/api/matches/all)  —  used for the EPG schedule
 # ---------------------------------------------------------------------------
+async def _has_any_stream(client: httpx.AsyncClient, event: dict, semaphore: asyncio.Semaphore) -> bool:
+    """Check if the event has at least one source with actual streams."""
+    async with semaphore:
+        for src in event.get("sources", []):
+            src_name = src.get("source")
+            src_id = src.get("id")
+            if not src_name or not src_id:
+                continue
+            try:
+                resp = await client.get(f"{API_BASE_URL}/stream/{src_name}/{src_id}", timeout=5)
+                if resp.status_code == 200:
+                    streams = resp.json()
+                    if isinstance(streams, list) and len(streams) > 0:
+                        return True
+            except Exception:
+                pass
+        return False
+
+
 async def get_all_events() -> list[dict]:
     """
     Fetch all events (upcoming + live + recent) from /api/matches/all.
@@ -135,9 +154,17 @@ async def get_all_events() -> list[dict]:
             live_ids = {item["id"] for item in live_data}
 
             events = _parse_events(all_data, live_ids=live_ids)
-            logger.info("Found %d total events (%d live)", len(events), len(live_ids))
-            _set_cached("all_events", events)
-            return events
+            
+            # Filter out events that have no actual streams available
+            semaphore = asyncio.Semaphore(15)
+            tasks = [_has_any_stream(client, event, semaphore) for event in events]
+            results = await asyncio.gather(*tasks)
+            
+            valid_events = [ev for ev, has_stream in zip(events, results) if has_stream]
+            
+            logger.info("Found %d total events (%d valid, %d live)", len(events), len(valid_events), len(live_ids))
+            _set_cached("all_events", valid_events)
+            return valid_events
         except Exception as e:
             logger.error("Error fetching all events: %s", e, exc_info=True)
             return []
