@@ -26,9 +26,9 @@ def _build_proxy_headers(captured_headers: dict) -> dict:
         if key.lower() not in _SKIP_HEADERS and value:
             proxy_headers[key] = value
     
-    # Ensure Origin is set — many CDNs require it
-    if "origin" not in proxy_headers and "Origin" not in proxy_headers:
-        referer = captured_headers.get("referer", "")
+    # Ensure Origin/Referer are present if missing, but do not overwrite if already present.
+    if "Origin" not in proxy_headers and "origin" not in proxy_headers:
+        referer = captured_headers.get("referer") or captured_headers.get("Referer")
         if referer:
             try:
                 parsed = urllib.parse.urlparse(referer)

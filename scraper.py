@@ -302,17 +302,13 @@ async def get_stream_url(match_id: str):
             m3u8_headers = {}
             m3u8_content = None
 
-            def on_request(request):
-                nonlocal m3u8_url, m3u8_headers
-                req_url = request.url
-                if ".m3u8" in req_url and not m3u8_url:
-                    m3u8_url = req_url
-                    m3u8_headers = dict(request.headers)
-                    logger.info("  ✓ Captured m3u8 URL: %s", req_url[:150])
-
             async def on_response(response):
-                nonlocal m3u8_content
-                if ".m3u8" in response.url and m3u8_content is None:
+                nonlocal m3u8_url, m3u8_headers, m3u8_content
+                req_url = response.url
+                if ".m3u8" in req_url and not m3u8_url and response.status == 200:
+                    m3u8_url = req_url
+                    m3u8_headers = dict(response.request.headers)
+                    logger.info("  👉 Captured VALID m3u8 URL: %s", req_url[:150])
                     try:
                         body = await response.text()
                         if body and "#EXTM3U" in body:
@@ -321,7 +317,6 @@ async def get_stream_url(match_id: str):
                     except Exception:
                         pass
 
-            page.on("request", on_request)
             page.on("response", on_response)
 
             try:
