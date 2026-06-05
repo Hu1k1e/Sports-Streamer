@@ -127,8 +127,7 @@ async def proxy_media(url: str, headers: dict, media_type: str = "video/MP2T"):
         forward_headers = {}
         if "content-length" in response.headers:
             forward_headers["Content-Length"] = response.headers["content-length"]
-        if "content-type" in response.headers:
-            media_type = response.headers["content-type"]
+        # Do not inherit upstream Content-Type (CDNs disguise TS segments as image/png to bypass restrictions)
             
         async def stream_generator():
             try:
