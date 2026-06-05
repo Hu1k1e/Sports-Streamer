@@ -124,14 +124,37 @@ async def proxy_media(url: str, headers: dict, media_type: str = "video/MP2T"):
             await session.close()
             return Response(content=b"", media_type=media_type, status_code=502)
             
+        # Get the async generator for chunks
+        content_iter = response.aiter_content()
+        
+        # Read the first chunk to inspect for PNG steganography
+        try:
+            first_chunk = await content_iter.__anext__()
+        except StopAsyncIteration:
+            first_chunk = b""
+            
+        stripped_bytes = 0
+        if first_chunk.startswith(b'\x89PNG\r\n\x1a\n'):
+            iend_idx = first_chunk.find(b'IEND')
+            if iend_idx != -1:
+                # Strip PNG header completely
+                png_header_len = iend_idx + 8
+                first_chunk = first_chunk[png_header_len:]
+                stripped_bytes = png_header_len
+        
         forward_headers = {}
         if "content-length" in response.headers:
-            forward_headers["Content-Length"] = response.headers["content-length"]
-        # Do not inherit upstream Content-Type (CDNs disguise TS segments as image/png to bypass restrictions)
+            try:
+                orig_len = int(response.headers["content-length"])
+                forward_headers["Content-Length"] = str(orig_len - stripped_bytes)
+            except ValueError:
+                pass
             
         async def stream_generator():
             try:
-                async for chunk in response.aiter_content():
+                if first_chunk:
+                    yield first_chunk
+                async for chunk in content_iter:
                     yield chunk
             finally:
                 await session.close()
