@@ -252,20 +252,16 @@ async def _get_embed_urls(match_id: str) -> list[str]:
 
         # Sort all streams by:
         # 1. Admin source priority
-        # 2. HD (True first)
-        # 3. English language (True first)
-        # 4. Viewers (descending fallback)
-        def sort_key(stream):
-            is_admin = stream.get("source", "").lower() == "admin"
-            hd = stream.get("hd", False)
-            is_en = "english" in stream.get("language", "").lower()
-            viewers = stream.get("viewers", 0)
-            return (is_admin, hd, is_en, viewers)
-
-        sorted_streams = sorted(all_streams, key=sort_key, reverse=True)
+        # Sort streams according to priority
+        def stream_priority(s):
+            # Prioritize admin streams, then sort by viewers
+            is_admin = s.get('source') == 'admin'
+            return (is_admin, s.get('viewers', 0))
+            
+        all_streams.sort(key=stream_priority, reverse=True)
         
         urls = []
-        for s in sorted_streams:
+        for s in all_streams:
             u = s.get("embedUrl")
             if u and u not in urls:
                 urls.append(u)
