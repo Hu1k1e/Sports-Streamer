@@ -109,7 +109,7 @@ async def proxy_m3u8(url: str, headers: dict):
         return ""
 
 
-async def proxy_media(url: str, headers: dict):
+async def proxy_media(url: str, headers: dict, media_type: str = "video/MP2T"):
     """
     Fetches a video segment or encryption key using curl_cffi (Chrome TLS impersonation)
     and streams it to Jellyfin.
@@ -130,8 +130,8 @@ async def proxy_media(url: str, headers: dict):
 
         return StreamingResponse(
             stream_generator(),
-            media_type="application/octet-stream"
+            media_type=media_type
         )
     except Exception as e:
         logger.error("Media stream error: %s", e)
-        return Response(content=b"", media_type="application/octet-stream", status_code=502)
+        return Response(content=b"", media_type=media_type, status_code=502)

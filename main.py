@@ -264,11 +264,13 @@ async def handle_proxy_m3u8(b64_url: str):
 
 @app.api_route("/proxy/media/{filename}", methods=["GET", "HEAD"])
 async def handle_proxy_media(filename: str):
+    is_ts = filename.endswith(".ts")
     b64_url = filename.rsplit('.', 1)[0]
     b64_url += "=" * ((4 - len(b64_url) % 4) % 4)
     url = base64.urlsafe_b64decode(b64_url).decode('utf-8')
     headers = stream_headers_cache.get("latest", {})
-    return await proxy_media(url, headers)
+    media_type = "video/MP2T" if is_ts else "application/octet-stream"
+    return await proxy_media(url, headers, media_type)
 
 
 if __name__ == "__main__":
