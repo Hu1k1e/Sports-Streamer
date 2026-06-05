@@ -114,24 +114,35 @@ async def proxy_media(url: str, headers: dict, media_type: str = "video/MP2T"):
     Fetches a video segment or encryption key using curl_cffi (Chrome TLS impersonation)
     and streams it to Jellyfin.
     """
+    session = AsyncSession(impersonate="chrome")
     try:
         proxy_headers = _build_proxy_headers(headers)
+        response = await session.get(url, headers=proxy_headers, stream=True, timeout=15)
         
+        if response.status_code != 200:
+            logger.error("Media fetch failed: %d for %s", response.status_code, url[:100])
+            await session.close()
+            return Response(content=b"", media_type=media_type, status_code=502)
+            
+        forward_headers = {}
+        if "content-length" in response.headers:
+            forward_headers["Content-Length"] = response.headers["content-length"]
+        if "content-type" in response.headers:
+            media_type = response.headers["content-type"]
+            
         async def stream_generator():
-            async with AsyncSession(impersonate="chrome") as session:
-                response = await session.get(url, headers=proxy_headers, stream=True, timeout=15)
-                if response.status_code != 200:
-                    logger.error("Media fetch failed: %d for %s", response.status_code, url[:100])
-                    yield b""
-                    return
-                
+            try:
                 async for chunk in response.aiter_content():
                     yield chunk
+            finally:
+                await session.close()
 
         return StreamingResponse(
             stream_generator(),
-            media_type=media_type
+            media_type=media_type,
+            headers=forward_headers
         )
     except Exception as e:
         logger.error("Media stream error: %s", e)
+        await session.close()
         return Response(content=b"", media_type=media_type, status_code=502)
