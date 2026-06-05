@@ -204,11 +204,12 @@ PREFERRED_SOURCES = [
 ]
 
 
-async def _get_embed_url(match_id: str):
+async def _get_embed_urls(match_id: str) -> list[str]:
     """
-    Get the embed URL for a match using its sources via the Stream API.
+    Get the embed URLs for a match using its sources via the Stream API.
     Fetches from /api/matches/live first (since the user is playing a live stream),
     falls back to /api/matches/all if not found.
+    Returns a sorted list of embed URLs to try.
     """
     # Try live events first, then all events
     for fetch_fn in [get_live_events, get_all_events]:
@@ -247,29 +248,34 @@ async def _get_embed_url(match_id: str):
 
         if not all_streams:
             logger.error("No streams found across %d sources for match %s", len(sources), match_id)
-            return None
+            return []
 
         # Sort all streams by:
-        # 1. Viewers (descending)
+        # 1. Admin source priority
         # 2. HD (True first)
         # 3. English language (True first)
+        # 4. Viewers (descending fallback)
         def sort_key(stream):
-            viewers = stream.get("viewers", 0)
+            is_admin = stream.get("source", "").lower() == "admin"
             hd = stream.get("hd", False)
-            is_en = stream.get("language", "").lower() == "english"
-            return (viewers, hd, is_en)
+            is_en = "english" in stream.get("language", "").lower()
+            viewers = stream.get("viewers", 0)
+            return (is_admin, hd, is_en, viewers)
 
         sorted_streams = sorted(all_streams, key=sort_key, reverse=True)
-        selected = sorted_streams[0]
         
-        embed_url = selected.get("embedUrl")
-        if embed_url:
-            logger.info("Selected stream from %s (viewers=%s, HD=%s, lang=%s): %s",
-                        selected.get("source"), selected.get("viewers"), selected.get("hd"),
-                        selected.get("language"), embed_url)
-            return embed_url
+        urls = []
+        for s in sorted_streams:
+            u = s.get("embedUrl")
+            if u and u not in urls:
+                urls.append(u)
+                logger.info("Found candidate stream from %s (viewers=%s, HD=%s, lang=%s): %s",
+                            s.get("source"), s.get("viewers"), s.get("hd"),
+                            s.get("language"), u)
+                            
+        return urls
 
-    return None
+    return []
 
 
 async def get_stream_url(match_id: str):
@@ -281,79 +287,85 @@ async def get_stream_url(match_id: str):
     logger.info("=== get_stream_url START ===")
     logger.info("Match ID: %s", match_id)
 
-    # Step 1: Get embed URL
-    embed_url = await _get_embed_url(match_id)
-    if not embed_url:
+    # Step 1: Get embed URLs
+    embed_urls = await _get_embed_urls(match_id)
+    if not embed_urls:
         logger.error("Could not resolve any embed URL for match %s", match_id)
         return {"url": None, "headers": {}, "content": None}
 
     # Step 2: Use Playwright just to evaluate the embed page and capture m3u8
-    logger.info("Navigating to embed URL: %s", embed_url)
-
     async with Stealth().use_async(async_playwright()) as p:
         browser = await p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
         context = await browser.new_context(user_agent=DEFAULT_HEADERS["User-Agent"])
-        page = await context.new_page()
+        
+        for embed_url in embed_urls:
+            logger.info("Navigating to embed URL: %s", embed_url)
+            page = await context.new_page()
 
-        m3u8_url = None
-        m3u8_headers = {}
-        m3u8_content = None
+            m3u8_url = None
+            m3u8_headers = {}
+            m3u8_content = None
 
-        def on_request(request):
-            nonlocal m3u8_url, m3u8_headers
-            req_url = request.url
-            if ".m3u8" in req_url and not m3u8_url:
-                m3u8_url = req_url
-                m3u8_headers = dict(request.headers)
-                logger.info("  ✓ Captured m3u8 URL: %s", req_url[:150])
+            def on_request(request):
+                nonlocal m3u8_url, m3u8_headers
+                req_url = request.url
+                if ".m3u8" in req_url and not m3u8_url:
+                    m3u8_url = req_url
+                    m3u8_headers = dict(request.headers)
+                    logger.info("  ✓ Captured m3u8 URL: %s", req_url[:150])
 
-        async def on_response(response):
-            nonlocal m3u8_content
-            if ".m3u8" in response.url and m3u8_content is None:
-                try:
-                    body = await response.text()
-                    if body and "#EXTM3U" in body:
-                        m3u8_content = body
-                        logger.info("  ✓ Captured m3u8 response body (%d bytes)", len(body))
-                except Exception:
-                    pass
-
-        page.on("request", on_request)
-        page.on("response", on_response)
-
-        try:
-            await page.goto(embed_url, wait_until="domcontentloaded", timeout=20000)
-            logger.info("Embed page loaded")
-
-            # Wait for m3u8 network request
-            for _ in range(15):
-                if m3u8_url:
-                    break
-                await page.wait_for_timeout(1000)
-
-            # If not yet captured, try clicking video/player elements
-            if not m3u8_url:
-                logger.info("Trying to click video/player elements...")
-                for selector in ["video", ".player", "[class*='player']", ".video-container", "iframe", "body"]:
-                    if m3u8_url:
-                        break
+            async def on_response(response):
+                nonlocal m3u8_content
+                if ".m3u8" in response.url and m3u8_content is None:
                     try:
-                        element = await page.query_selector(selector)
-                        if element:
-                            await element.click(timeout=2000)
-                            await page.wait_for_timeout(2000)
+                        body = await response.text()
+                        if body and "#EXTM3U" in body:
+                            m3u8_content = body
+                            logger.info("  ✓ Captured m3u8 response body (%d bytes)", len(body))
                     except Exception:
                         pass
 
-            if m3u8_url:
-                logger.info("=== get_stream_url END (SUCCESS) ===")
-                return {"url": m3u8_url, "headers": m3u8_headers, "content": m3u8_content}
+            page.on("request", on_request)
+            page.on("response", on_response)
 
-            logger.warning("=== get_stream_url END (FAILED) ===")
-            return {"url": None, "headers": {}, "content": None}
+            try:
+                await page.goto(embed_url, wait_until="domcontentloaded", timeout=20000)
+                logger.info("Embed page loaded")
 
-        except Exception as e:
-            logger.error("Error evaluating embed URL: %s", e)
-            return {"url": None, "headers": {}, "content": None}
-        finally:
-            await browser.close()
+                # Wait for m3u8 network request
+                for _ in range(15):
+                    if m3u8_url:
+                        break
+                    await page.wait_for_timeout(1000)
+
+                # If not yet captured, try clicking video/player elements
+                if not m3u8_url:
+                    logger.info("Trying to click video/player elements...")
+                    for selector in ["video", ".player", "[class*='player']", ".video-container", "iframe", "body"]:
+                        if m3u8_url:
+                            break
+                        try:
+                            element = await page.query_selector(selector)
+                            if element:
+                                await element.click(timeout=2000)
+                                await page.wait_for_timeout(2000)
+                        except Exception:
+                            pass
+
+                if m3u8_url:
+                    logger.info("=== get_stream_url END (SUCCESS) ===")
+                    await page.close()
+                    await browser.close()
+                    return {"url": m3u8_url, "headers": m3u8_headers, "content": m3u8_content}
+
+                logger.warning("Failed to capture m3u8 on %s. Trying next embed URL...", embed_url)
+            except Exception as e:
+                logger.error("Error evaluating embed URL %s: %s", embed_url, e)
+            finally:
+                await page.close()
+                
+        # If we exhausted all embed URLs
+        await browser.close()
+        
+    logger.warning("=== get_stream_url END (FAILED ALL SOURCES) ===")
+    return {"url": None, "headers": {}, "content": None}
