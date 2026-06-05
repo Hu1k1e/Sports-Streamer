@@ -17,10 +17,10 @@ API_BASE_URL = f"{STREAMED_PK_URL}/api"
 
 # ---------------------------------------------------------------------------
 # In-memory cache for API responses (avoids hammering the API on every
-# Jellyfin playlist / EPG refresh).  TTL = 15 minutes.
+# Jellyfin playlist / EPG refresh).  TTL = 5 minutes.
 # ---------------------------------------------------------------------------
 _cache: dict[str, dict] = {}
-_CACHE_TTL = 900  # 15 minutes in seconds
+_CACHE_TTL = 300  # 5 minutes in seconds
 
 
 def _evict_expired():
