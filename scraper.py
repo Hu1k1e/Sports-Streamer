@@ -353,6 +353,12 @@ async def get_stream_url(match_id: str):
                             pass
 
                 if m3u8_url:
+                    # Capture cookies and attach to headers for proxy
+                    cookies = await context.cookies()
+                    cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+                    if cookie_str:
+                        m3u8_headers["Cookie"] = cookie_str
+
                     logger.info("=== get_stream_url END (SUCCESS) ===")
                     await page.close()
                     await browser.close()

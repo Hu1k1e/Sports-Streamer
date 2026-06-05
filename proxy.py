@@ -40,6 +40,8 @@ def _build_proxy_headers(captured_headers: dict) -> dict:
     return proxy_headers
 
 
+import re
+
 def rewrite_m3u8(content: str, base_url: str) -> str:
     """
     Rewrite an m3u8 playlist so all URLs point through our proxy.
@@ -56,6 +58,15 @@ def rewrite_m3u8(content: str, base_url: str) -> str:
         if line.startswith('#'):
             if line.startswith('#EXT-X-STREAM-INF:') and 'CODECS=' not in line:
                 line = line + ',CODECS="avc1.640028,mp4a.40.2"'
+            elif line.startswith('#EXT-X-KEY:'):
+                # Rewrite URI in EXT-X-KEY to route through proxy
+                match = re.search(r'URI="([^"]+)"', line)
+                if match:
+                    key_url = match.group(1)
+                    absolute_url = urllib.parse.urljoin(base_url, key_url)
+                    b64_url = base64.urlsafe_b64encode(absolute_url.encode('utf-8')).decode('utf-8')
+                    proxy_key_url = f"{PROXY_HOST}/proxy/media/{b64_url}.key"
+                    line = line[:match.start(1)] + proxy_key_url + line[match.end(1):]
             rewritten_lines.append(line)
         else:
             # Segment or nested playlist URL
@@ -67,7 +78,7 @@ def rewrite_m3u8(content: str, base_url: str) -> str:
             if ".m3u8" in absolute_url:
                 rewritten_lines.append(f"{PROXY_HOST}/proxy/m3u8/{b64_url}.m3u8")
             else:
-                rewritten_lines.append(f"{PROXY_HOST}/proxy/segment/{b64_url}.ts")
+                rewritten_lines.append(f"{PROXY_HOST}/proxy/media/{b64_url}.ts")
     
     logger.info("M3U8 rewritten: %d lines", len(rewritten_lines))
     return "\n".join(rewritten_lines)
@@ -98,9 +109,9 @@ async def proxy_m3u8(url: str, headers: dict):
         return ""
 
 
-async def proxy_segment(url: str, headers: dict):
+async def proxy_media(url: str, headers: dict):
     """
-    Fetches a video segment using curl_cffi (Chrome TLS impersonation)
+    Fetches a video segment or encryption key using curl_cffi (Chrome TLS impersonation)
     and streams it to Jellyfin.
     """
     try:
@@ -110,7 +121,7 @@ async def proxy_segment(url: str, headers: dict):
             async with AsyncSession(impersonate="chrome") as session:
                 response = await session.get(url, headers=proxy_headers, stream=True, timeout=15)
                 if response.status_code != 200:
-                    logger.error("Segment fetch failed: %d for %s", response.status_code, url[:100])
+                    logger.error("Media fetch failed: %d for %s", response.status_code, url[:100])
                     yield b""
                     return
                 
@@ -119,8 +130,8 @@ async def proxy_segment(url: str, headers: dict):
 
         return StreamingResponse(
             stream_generator(),
-            media_type="video/MP2T"
+            media_type="application/octet-stream"
         )
     except Exception as e:
-        logger.error("Segment stream error: %s", e)
-        return Response(content=b"", media_type="video/MP2T", status_code=502)
+        logger.error("Media stream error: %s", e)
+        return Response(content=b"", media_type="application/octet-stream", status_code=502)

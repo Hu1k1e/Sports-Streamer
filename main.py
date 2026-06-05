@@ -5,7 +5,7 @@ from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Response, Request
 from fastapi.middleware.cors import CORSMiddleware
 from scraper import get_live_events, get_all_events, get_sports, get_stream_url
-from proxy import proxy_m3u8, proxy_segment, rewrite_m3u8
+from proxy import proxy_m3u8, proxy_media, rewrite_m3u8
 from config import PROXY_HOST, STREAM_CACHE_TTL, STREAMED_PK_URL, EPG_DEFAULT_DURATION_HOURS
 
 logger = logging.getLogger("main")
@@ -262,12 +262,13 @@ async def handle_proxy_m3u8(b64_url: str):
     return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
 
 
-@app.api_route("/proxy/segment/{b64_url}.ts", methods=["GET", "HEAD"])
-async def handle_proxy_segment(b64_url: str):
+@app.api_route("/proxy/media/{filename}", methods=["GET", "HEAD"])
+async def handle_proxy_media(filename: str):
+    b64_url = filename.rsplit('.', 1)[0]
     b64_url += "=" * ((4 - len(b64_url) % 4) % 4)
     url = base64.urlsafe_b64decode(b64_url).decode('utf-8')
     headers = stream_headers_cache.get("latest", {})
-    return await proxy_segment(url, headers)
+    return await proxy_media(url, headers)
 
 
 if __name__ == "__main__":
