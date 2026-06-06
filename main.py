@@ -290,8 +290,6 @@ if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=5000)
 
 
-@app.get("/sportsurge.m3u")
-
 def _sync_poster(sportsurge_title: str, streamed_events: list) -> str | None:
     best_score = 0.5
     best_logo = None
