@@ -303,7 +303,7 @@ async def generate_sportsurge_playlist(request: Request):
             title = "[LIVE] " + title
             
         m3u.append(f'#EXTINF:-1 tvg-id="{event["id"]}" tvg-name="{event["title"]}" tvg-logo="{logo_url}" group-title="{event["sport"]}",{title}')
-        m3u.append(f"{base_url}/stream/sportsurge/{event['id']}")
+        m3u.append(f"{base_url}/sportsurge/stream/{event['id']}")
         
     return Response(content="\n".join(m3u), media_type="application/vnd.apple.mpegurl")
 
@@ -332,7 +332,7 @@ async def generate_sportsurge_epg():
     return Response(content="\n".join(xml), media_type="application/xml")
 
 
-@app.api_route("/stream/sportsurge/{event_id}", methods=["GET", "HEAD"])
+@app.api_route("/sportsurge/stream/{event_id}", methods=["GET", "HEAD"])
 async def stream_sportsurge_event(request: Request, event_id: str):
     if request.method == "HEAD":
         return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl"})
