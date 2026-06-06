@@ -209,6 +209,12 @@ async def get_ppv_epg():
         return Response(content='<?xml version="1.0" encoding="UTF-8"?><tv></tv>', media_type="application/xml")
 
 
+import time
+
+# Cache for resolved PPV m3u8 URLs to avoid 5-10s Playwright launch delays on every request.
+# Dict maps: path -> {"url": str, "headers": dict, "timestamp": float}
+ppv_stream_cache = {}
+
 @app.api_route("/ppv/stream/{path:path}", methods=["GET", "HEAD"])
 async def ppv_proxy_stream(path: str, request: Request):
     """
@@ -221,8 +227,21 @@ async def ppv_proxy_stream(path: str, request: Request):
 
     embed_url = f"https://embedindia.st/embed/{path}"
     
-    # fetch_ppv_m3u8_url returns a dict {"url": m3u8_url, "headers": headers}
-    stream_data = await fetch_ppv_m3u8_url(embed_url)
+    # Check if we have a valid cached m3u8 (TTL = 15 minutes)
+    now = time.time()
+    stream_data = None
+    if path in ppv_stream_cache:
+        cached_data = ppv_stream_cache[path]
+        if now - cached_data["timestamp"] < 900:  # 15 minutes TTL
+            logger.info(f"PPV GET: Using cached M3U8 for {path}")
+            stream_data = cached_data
+    
+    if not stream_data:
+        # fetch_ppv_m3u8_url returns a dict {"url": m3u8_url, "headers": headers}
+        stream_data = await fetch_ppv_m3u8_url(embed_url)
+        if stream_data and stream_data.get("url"):
+            stream_data["timestamp"] = now
+            ppv_stream_cache[path] = stream_data
     
     if stream_data and stream_data.get("url"):
         url = stream_data["url"]
