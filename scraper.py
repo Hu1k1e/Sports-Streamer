@@ -5,6 +5,7 @@ import time
 import httpx
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
+from playwright_lock import playwright_lock
 from config import STREAMED_PK_URL, DEFAULT_HEADERS, DEBUG_LOGGING
 
 logger = logging.getLogger("scraper")
