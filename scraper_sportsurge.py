@@ -33,8 +33,18 @@ async def get_sportsurge_events():
             for url, inner_html in links:
                 # Extract title
                 title_match = re.search(r'<h4[^>]*>(.*?)</h4>', inner_html, re.DOTALL | re.IGNORECASE)
-                title = title_match.group(1).strip() if title_match else 'Unknown Event'
+                if title_match:
+                    title = title_match.group(1).strip()
+                else:
+                    # Try to extract teams for /watch/ URLs
+                    teams = re.findall(r'<div class="team-name-event-row">.*?<span[^>]*>(.*?)</span>', inner_html, re.DOTALL | re.IGNORECASE)
+                    if len(teams) == 2:
+                        title = f"{teams[0].strip()} vs {teams[1].strip()}"
+                    else:
+                        title = 'Unknown Event'
+                
                 title = re.sub(r'<[^>]+>', '', title) # strip any remaining tags just in case
+                title = " ".join(title.split()) # clean up extra spaces/newlines
                 
                 # Extract sport
                 sport_match = re.search(r'<div[^>]*ListelemeDuzen[^>]*text-center[^>]*>(.*?)</div>', inner_html, re.DOTALL | re.IGNORECASE)
