@@ -291,8 +291,33 @@ if __name__ == "__main__":
 
 
 @app.get("/sportsurge.m3u")
+
+def _sync_poster(sportsurge_title: str, streamed_events: list) -> str | None:
+    best_score = 0.5
+    best_logo = None
+    
+    s_clean = sportsurge_title.lower().replace(' vs ', ' ').replace('-', ' ')
+    s_words = set(s_clean.split())
+    if not s_words:
+        return None
+        
+    for event in streamed_events:
+        e_clean = event['name'].lower().replace(' vs ', ' ').replace('-', ' ')
+        e_words = set(e_clean.split())
+        if not e_words:
+            continue
+            
+        overlap = len(s_words & e_words) / max(1, len(s_words | e_words))
+        if overlap > best_score:
+            best_score = overlap
+            best_logo = event.get('logo_url')
+            
+    return best_logo
+
+@app.api_route("/sportsurge.m3u", methods=["GET", "HEAD"])
 async def generate_sportsurge_playlist(request: Request):
     events = await get_sportsurge_events()
+    streamed_events = await get_all_events()
     base_url = str(request.base_url).rstrip('/')
     
     m3u = ["#EXTM3U"]
@@ -300,7 +325,8 @@ async def generate_sportsurge_playlist(request: Request):
         if not event.get('is_live'):
             continue
             
-        logo_url = event.get('logo') or f"{base_url}/api/images/badge/default"
+        synced_logo = _sync_poster(event['title'], streamed_events)
+        logo_url = synced_logo or event.get('logo') or f"{base_url}/api/images/badge/default"
         title = "[LIVE] " + event['title']
             
         m3u.append(f'#EXTINF:-1 tvg-id="{event["id"]}" tvg-name="{event["title"]}" tvg-logo="{logo_url}" group-title="{event["sport"]}",{title}')
@@ -309,10 +335,10 @@ async def generate_sportsurge_playlist(request: Request):
     return Response(content="\n".join(m3u), media_type="application/vnd.apple.mpegurl")
 
 
-@app.get("/sportsurge.xml")
-async def generate_sportsurge_epg():
+@app.api_route("/sportsurge.xml", methods=["GET", "HEAD"])
+async def generate_sportsurge_epg(request: Request):
     events = await get_sportsurge_events()
-    
+    streamed_events = await get_all_events()
     xml = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv>']
     
     for event in events:
@@ -321,8 +347,11 @@ async def generate_sportsurge_epg():
             
         xml.append(f'  <channel id="{event["id"]}">')
         xml.append(f'    <display-name>{_xml_escape(event["title"])}</display-name>')
-        if event.get('logo'):
-            xml.append(f'    <icon src="{_xml_escape(event["logo"])}" />')
+        
+        synced_logo = _sync_poster(event['title'], streamed_events)
+        logo_url = synced_logo or event.get('logo')
+        if logo_url:
+            xml.append(f'    <icon src="{_xml_escape(logo_url)}" />')
         xml.append(f'  </channel>')
         
         # We don\'t have real times for sportsurge, so just use current time to +24h
