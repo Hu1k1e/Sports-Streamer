@@ -1,9 +1,7 @@
-FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy
+FROM python:3.11-slim
 
 # Environment settings
 ENV PYTHONUNBUFFERED=1
-# Replace this dynamically at runtime or in docker-compose.yml
-ENV PROXY_HOST=http://127.0.0.1:7694
 
 WORKDIR /app
 
@@ -11,7 +9,9 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Playwright Chromium is already installed in the base image
+# Install Playwright chromium and its OS dependencies
+RUN playwright install chromium --with-deps
+
 # Copy app files
 COPY . .
 
