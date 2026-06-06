@@ -88,10 +88,10 @@ def read_root():
 @app.get("/playlist.m3u")
 async def generate_playlist(request: Request):
     """
-    Generate M3U playlist with ONLY currently live streams.
-    Uses /api/matches/live — refreshed every 15 minutes via cache.
+    Generate M3U playlist with all streams currently broadcasting (live + early starts).
+    Uses /api/matches/all-today filtered by active streams.
     """
-    events = await get_live_events()
+    events = await get_all_events()
     sports = await get_sports()
     
     base_url = str(request.base_url).rstrip('/')
