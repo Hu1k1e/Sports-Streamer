@@ -52,14 +52,18 @@ def rewrite_m3u8(content: str, base_url: str, proxy_base_url: str) -> str:
     lines = content.split('\n')
     rewritten_lines = []
     
+    is_stream_inf = False
+    
     for line in lines:
         line = line.strip()
         if not line:
             continue
             
         if line.startswith('#'):
-            if line.startswith('#EXT-X-STREAM-INF:') and 'CODECS=' not in line:
-                line = line + ',CODECS="avc1.640028,mp4a.40.2"'
+            if line.startswith('#EXT-X-STREAM-INF:'):
+                is_stream_inf = True
+                if 'CODECS=' not in line:
+                    line = line + ',CODECS="avc1.640028,mp4a.40.2"'
             elif line.startswith('#EXT-X-KEY:'):
                 # Rewrite URI in EXT-X-KEY to route through proxy
                 match = re.search(r'URI="([^"]+)"', line)
@@ -77,8 +81,9 @@ def rewrite_m3u8(content: str, base_url: str, proxy_base_url: str) -> str:
             # Base64 encode the url so FFmpeg doesn't see .jpg in the path and get confused
             b64_url = base64.urlsafe_b64encode(absolute_url.encode('utf-8')).decode('utf-8')
             
-            if ".m3u8" in absolute_url:
+            if is_stream_inf or ".m3u8" in absolute_url:
                 rewritten_lines.append(f"{proxy_base_url}/proxy/m3u8/{b64_url}.m3u8")
+                is_stream_inf = False
             else:
                 rewritten_lines.append(f"{proxy_base_url}/proxy/media/{b64_url}.ts")
     
