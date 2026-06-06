@@ -7,7 +7,6 @@ from fastapi.responses import PlainTextResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 from scraper import get_live_events, get_all_events, get_sports, get_stream_url
-from scraper_ppv import generate_ppv_m3u, generate_ppv_epg, fetch_ppv_m3u8_url, get_ppv_streams
 from proxy import proxy_m3u8, proxy_media, rewrite_m3u8
 from config import PROXY_HOST, STREAM_CACHE_TTL, STREAMED_PK_URL, EPG_DEFAULT_DURATION_HOURS
 
@@ -30,66 +29,6 @@ MAX_STREAM_CACHE_SIZE = 50  # hard cap to prevent unbounded growth
 # Per-stream header cache for segment proxying.
 # Also stores a "latest" key as fallback.
 stream_headers_cache: dict[str, dict] = {}
-
-
-# --- Background Cache Pre-Warmer ---
-async def pre_warm_ppv_cache():
-    """Periodically fetches all PPV streams and resolves the M3U8 for active games."""
-    while True:
-        try:
-            logger.info("Starting background pre-warm of PPV cache...")
-            events = await get_ppv_streams()
-            
-            # Clean up expired cache items first
-            now = time.time()
-            stale_keys = [k for k, v in ppv_stream_cache.items() if now - v["timestamp"] >= 900]
-            for k in stale_keys:
-                del ppv_stream_cache[k]
-                
-            active_count = 0
-            for event in events:
-                # Only pre-warm live streams. PPV API returns them all.
-                uri_name = event.get("uri_name")
-                if not uri_name:
-                    continue
-                    
-                path = uri_name
-                embed_url = f"https://embedindia.st/embed/{path}"
-                
-                # Check if we already have it fresh OR if it recently failed (cooldown = 15 mins)
-                if path in ppv_stream_cache:
-                    cache_item = ppv_stream_cache[path]
-                    age = now - cache_item["timestamp"]
-                    if cache_item.get("failed") and age < 900:
-                        continue  # In cooldown from a recent failure
-                    if not cache_item.get("failed") and age < 600:
-                        continue  # Fresh valid cache
-                    
-                logger.info(f"Pre-warming cache for: {path}")
-                stream_data = await fetch_ppv_m3u8_url(embed_url)
-                if stream_data and stream_data.get("url"):
-                    stream_data["timestamp"] = time.time()
-                    stream_data["failed"] = False
-                    ppv_stream_cache[path] = stream_data
-                    active_count += 1
-                else:
-                    # Mark as failed to apply cooldown
-                    logger.info(f"Pre-warm failed for {path}. Applying 15-minute cooldown.")
-                    ppv_stream_cache[path] = {"failed": True, "timestamp": time.time()}
-                    
-                # Small sleep to prevent hammering Playwright too hard
-                await asyncio.sleep(1)
-                
-            logger.info(f"Finished background pre-warm. Updated {active_count} streams. Sleeping for 5 minutes.")
-        except Exception as e:
-            logger.error(f"Error in pre_warm_ppv_cache loop: {e}", exc_info=True)
-            
-        await asyncio.sleep(300) # Run every 5 minutes
-
-@app.on_event("startup")
-async def startup_event():
-    logger.info("Starting background tasks...")
-    asyncio.create_task(pre_warm_ppv_cache())
 
 
 def _evict_expired_streams():
@@ -248,85 +187,7 @@ async def generate_epg():
     return Response(content="\n".join(xml), media_type="application/xml")
 
 
-@app.get("/ppv.m3u", response_class=PlainTextResponse)
-async def get_ppv_m3u_playlist(request: Request):
-    """Generates an M3U playlist specifically for PPV.to."""
-    try:
-        m3u = await generate_ppv_m3u(request)
-        return m3u
-    except Exception as e:
-        logger.error(f"Error generating PPV M3U: {e}")
-        return "#EXTM3U\n"
-
-
-@app.get("/ppv.xml")
-async def get_ppv_epg():
-    """Generates an XMLTV EPG specifically for PPV.to."""
-    try:
-        epg = await generate_ppv_epg()
-        return Response(content=epg, media_type="application/xml")
-    except Exception as e:
-        logger.error(f"Error generating PPV EPG: {e}")
-        return Response(content='<?xml version="1.0" encoding="UTF-8"?><tv></tv>', media_type="application/xml")
-
-
 import time
-
-# Cache for resolved PPV m3u8 URLs to avoid 5-10s Playwright launch delays on every request.
-# Dict maps: path -> {"url": str, "headers": dict, "timestamp": float}
-ppv_stream_cache = {}
-
-@app.api_route("/ppv/stream/{path:path}", methods=["GET", "HEAD"])
-async def ppv_proxy_stream(path: str, request: Request):
-    """
-    Proxies a PPV.to stream by resolving the .m3u8 using Playwright
-    and then proxying the M3U8 and its segments.
-    """
-    if request.method == "HEAD":
-        # Return 200 optimistically for probes
-        return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl"})
-
-    embed_url = f"https://embedindia.st/embed/{path}"
-    
-    # Check if we have a valid cached m3u8 (TTL = 15 minutes)
-    now = time.time()
-    stream_data = None
-    if path in ppv_stream_cache:
-        cached_data = ppv_stream_cache[path]
-        if not cached_data.get("failed") and now - cached_data["timestamp"] < 900:  # 15 minutes TTL
-            logger.info(f"PPV GET: Using cached M3U8 for {path}")
-            stream_data = cached_data
-    
-    if not stream_data:
-        # fetch_ppv_m3u8_url returns a dict {"url": m3u8_url, "headers": headers}
-        stream_data = await fetch_ppv_m3u8_url(embed_url)
-        if stream_data and stream_data.get("url"):
-            stream_data["timestamp"] = now
-            stream_data["failed"] = False
-            ppv_stream_cache[path] = stream_data
-    
-    if stream_data and stream_data.get("url"):
-        url = stream_data["url"]
-        headers = stream_data["headers"]
-        
-        # Store headers for segment proxying
-        stream_headers_cache[path] = headers
-        stream_headers_cache["latest"] = headers
-        
-        # Proxy the m3u8 content
-        logger.info(f"PPV GET: proxying m3u8 from {url[:120]}")
-        proxy_base_url = str(request.base_url).rstrip('/')
-        m3u8_content = await proxy_m3u8(url, headers, proxy_base_url)
-        
-        if m3u8_content:
-            return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
-        else:
-            logger.error(f"PPV GET: proxy_m3u8 returned empty content for {url[:120]}")
-            return Response(content="Failed to fetch stream playlist", status_code=502)
-    else:
-        logger.error(f"Failed to extract M3U8 for PPV path: {path}")
-        raise HTTPException(status_code=404, detail="Stream not found or offline")
-
 
 @app.api_route("/stream/{event_path:path}", methods=["GET", "HEAD"])
 async def stream_event(event_path: str, request: Request):
