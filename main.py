@@ -332,7 +332,7 @@ async def generate_sportsurge_epg():
     return Response(content="\n".join(xml), media_type="application/xml")
 
 
-@app.route("/stream/sportsurge/{event_id}", methods=["GET", "HEAD"])
+@app.api_route("/stream/sportsurge/{event_id}", methods=["GET", "HEAD"])
 async def stream_sportsurge_event(request: Request, event_id: str):
     if request.method == "HEAD":
         return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl"})
