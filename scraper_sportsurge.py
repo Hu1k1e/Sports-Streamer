@@ -27,7 +27,7 @@ async def get_sportsurge_events():
             response.raise_for_status()
             html = response.text
             
-            links = re.findall(r'<a[^>]+href=[\"\'](https://sportsurge\.ws/event/[^\'\"]+)[\"\'][^>]*>(.*?)</a>', html, re.DOTALL)
+            links = re.findall(r'<a[^>]+href=[\"\'](https://sportsurge\.ws/(?:event|watch)/[^\'\"]+)[\"\'][^>]*>(.*?)</a>', html, re.DOTALL)
             events = []
             
             for url, inner_html in links:

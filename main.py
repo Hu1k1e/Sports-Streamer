@@ -297,10 +297,11 @@ async def generate_sportsurge_playlist(request: Request):
     
     m3u = ["#EXTM3U"]
     for event in events:
+        if not event.get('is_live'):
+            continue
+            
         logo_url = f"{base_url}/api/images/badge/default"
-        title = event['title']
-        if event.get('is_live'):
-            title = "[LIVE] " + title
+        title = "[LIVE] " + event['title']
             
         m3u.append(f'#EXTINF:-1 tvg-id="{event["id"]}" tvg-name="{event["title"]}" tvg-logo="{logo_url}" group-title="{event["sport"]}",{title}')
         m3u.append(f"{base_url}/sportsurge/stream/{event['id']}")
@@ -315,6 +316,9 @@ async def generate_sportsurge_epg():
     xml = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv>']
     
     for event in events:
+        if not event.get('is_live'):
+            continue
+            
         xml.append(f'  <channel id="{event["id"]}">')
         xml.append(f'    <display-name>{_xml_escape(event["title"])}</display-name>')
         xml.append(f'  </channel>')
