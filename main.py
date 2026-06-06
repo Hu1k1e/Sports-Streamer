@@ -300,7 +300,7 @@ async def generate_sportsurge_playlist(request: Request):
         if not event.get('is_live'):
             continue
             
-        logo_url = f"{base_url}/api/images/badge/default"
+        logo_url = event.get('logo') or f"{base_url}/api/images/badge/default"
         title = "[LIVE] " + event['title']
             
         m3u.append(f'#EXTINF:-1 tvg-id="{event["id"]}" tvg-name="{event["title"]}" tvg-logo="{logo_url}" group-title="{event["sport"]}",{title}')
@@ -321,6 +321,8 @@ async def generate_sportsurge_epg():
             
         xml.append(f'  <channel id="{event["id"]}">')
         xml.append(f'    <display-name>{_xml_escape(event["title"])}</display-name>')
+        if event.get('logo'):
+            xml.append(f'    <icon src="{_xml_escape(event["logo"])}" />')
         xml.append(f'  </channel>')
         
         # We don\'t have real times for sportsurge, so just use current time to +24h

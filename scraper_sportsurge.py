@@ -54,6 +54,10 @@ async def get_sportsurge_events():
                 # Extract date/time? Sportsurge doesn't easily expose this, but we can assume they are all "today" or "live"
                 is_live = 'LIVE' in inner_html.upper()
                 
+                # Extract logo
+                img_srcs = re.findall(r'<img[^>]+src=[\"\'](https?://[^\"\']+)[\"\']', inner_html, re.IGNORECASE)
+                logo_url = img_srcs[0] if img_srcs else None
+                
                 # Create a unique ID for the M3U/Proxy
                 event_id = url.strip('/').split('/')[-1]
                 
@@ -62,7 +66,8 @@ async def get_sportsurge_events():
                     "url": url,
                     "title": title,
                     "sport": sport,
-                    "is_live": is_live
+                    "is_live": is_live,
+                    "logo": logo_url
                 })
             
             _events_cache = events
