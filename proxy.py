@@ -124,7 +124,8 @@ async def proxy_media(url: str, headers: dict, media_type: str = "video/MP2T"):
     session = AsyncSession(impersonate="chrome")
     try:
         proxy_headers = _build_proxy_headers(headers)
-        response = await session.get(url, headers=proxy_headers, stream=True, timeout=15)
+        # timeout=None allows streaming indefinitely without killing connection midway
+        response = await session.get(url, headers=proxy_headers, stream=True, timeout=None)
         
         if response.status_code != 200:
             logger.error("Media fetch failed: %d for %s", response.status_code, url[:100])
@@ -150,13 +151,8 @@ async def proxy_media(url: str, headers: dict, media_type: str = "video/MP2T"):
                 stripped_bytes = png_header_len
         
         forward_headers = {}
-        if "content-length" in response.headers:
-            try:
-                orig_len = int(response.headers["content-length"])
-                forward_headers["Content-Length"] = str(orig_len - stripped_bytes)
-            except ValueError:
-                pass
-            
+        # Do NOT forward Content-Length because ASGI handles Transfer-Encoding: chunked automatically.
+        # If we manually set Content-Length and it's slightly off or the stream drops, clients like FFmpeg will fail with EOF.
         async def stream_generator():
             try:
                 if first_chunk:
