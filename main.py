@@ -209,12 +209,16 @@ async def get_ppv_epg():
         return Response(content='<?xml version="1.0" encoding="UTF-8"?><tv></tv>', media_type="application/xml")
 
 
-@app.get("/ppv/stream/{path:path}")
-async def ppv_proxy_stream(path: str):
+@app.api_route("/ppv/stream/{path:path}", methods=["GET", "HEAD"])
+async def ppv_proxy_stream(path: str, request: Request):
     """
     Proxies a PPV.to stream by resolving the .m3u8 using Playwright
     and then proxying the M3U8 and its segments.
     """
+    if request.method == "HEAD":
+        # Return 200 optimistically for probes
+        return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl"})
+
     embed_url = f"https://embedindia.st/embed/{path}"
     
     # fetch_ppv_m3u8_url returns a dict {"url": m3u8_url, "headers": headers}
