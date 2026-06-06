@@ -86,13 +86,15 @@ def read_root():
 
 
 @app.get("/playlist.m3u")
-async def generate_playlist():
+async def generate_playlist(request: Request):
     """
     Generate M3U playlist with ONLY currently live streams.
     Uses /api/matches/live — refreshed every 15 minutes via cache.
     """
     events = await get_live_events()
     sports = await get_sports()
+    
+    base_url = str(request.base_url).rstrip('/')
     
     m3u = ["#EXTM3U"]
     for event in events:
@@ -107,7 +109,7 @@ async def generate_playlist():
             f'#EXTINF:-1 tvg-id="{match_id}" tvg-name="{name}"'
             f' tvg-logo="{logo}" group-title="{group_title}",{name}'
         )
-        stream_url = f"{PROXY_HOST}/stream/{match_id}"
+        stream_url = f"{base_url}/stream/{match_id}"
         m3u.append(stream_url)
     
     logger.info("Generated M3U playlist with %d live channels", len(events))
@@ -186,10 +188,10 @@ async def generate_epg():
 
 
 @app.get("/ppv.m3u", response_class=PlainTextResponse)
-async def get_ppv_m3u_playlist():
+async def get_ppv_m3u_playlist(request: Request):
     """Generates an M3U playlist specifically for PPV.to."""
     try:
-        m3u = await generate_ppv_m3u()
+        m3u = await generate_ppv_m3u(request)
         return m3u
     except Exception as e:
         logger.error(f"Error generating PPV M3U: {e}")

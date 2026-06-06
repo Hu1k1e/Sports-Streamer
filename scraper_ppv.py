@@ -53,13 +53,15 @@ async def get_ppv_streams() -> List[Dict[str, Any]]:
             logger.error(f"Error fetching PPV streams: {e}")
             return _cache["streams"] or []
 
-async def generate_ppv_m3u() -> str:
+from fastapi import Request
+
+async def generate_ppv_m3u(request: Request) -> str:
     """Generate M3U playlist for PPV.to."""
     events = await get_ppv_streams()
     lines = ["#EXTM3U"]
     
-    # We will point the M3U to our proxy
-    base_url = PROXY_HOST.rstrip('/')
+    # We will point the M3U to our proxy using the actual dynamic host requested
+    base_url = str(request.base_url).rstrip('/')
     
     for event in events:
         title = event.get("name", "Unknown Match")
