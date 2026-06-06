@@ -1,8 +1,10 @@
 import logging
 import base64
 import urllib.parse
+import asyncio
 from curl_cffi.requests import AsyncSession
 from fastapi.responses import StreamingResponse, Response
+from playwright.async_api import async_playwright
 from config import PROXY_HOST
 
 logger = logging.getLogger("proxy")
@@ -42,7 +44,7 @@ def _build_proxy_headers(captured_headers: dict) -> dict:
 
 import re
 
-def rewrite_m3u8(content: str, base_url: str) -> str:
+def rewrite_m3u8(content: str, base_url: str, proxy_base_url: str) -> str:
     """
     Rewrite an m3u8 playlist so all URLs point through our proxy.
     This is used both for captured content and freshly fetched content.
@@ -65,7 +67,7 @@ def rewrite_m3u8(content: str, base_url: str) -> str:
                     key_url = match.group(1)
                     absolute_url = urllib.parse.urljoin(base_url, key_url)
                     b64_url = base64.urlsafe_b64encode(absolute_url.encode('utf-8')).decode('utf-8')
-                    proxy_key_url = f"{PROXY_HOST}/proxy/media/{b64_url}.key"
+                    proxy_key_url = f"{proxy_base_url}/proxy/media/{b64_url}.key"
                     line = line[:match.start(1)] + proxy_key_url + line[match.end(1):]
             rewritten_lines.append(line)
         else:
@@ -76,15 +78,15 @@ def rewrite_m3u8(content: str, base_url: str) -> str:
             b64_url = base64.urlsafe_b64encode(absolute_url.encode('utf-8')).decode('utf-8')
             
             if ".m3u8" in absolute_url:
-                rewritten_lines.append(f"{PROXY_HOST}/proxy/m3u8/{b64_url}.m3u8")
+                rewritten_lines.append(f"{proxy_base_url}/proxy/m3u8/{b64_url}.m3u8")
             else:
-                rewritten_lines.append(f"{PROXY_HOST}/proxy/media/{b64_url}.ts")
+                rewritten_lines.append(f"{proxy_base_url}/proxy/media/{b64_url}.ts")
     
     logger.info("M3U8 rewritten: %d lines", len(rewritten_lines))
     return "\n".join(rewritten_lines)
 
 
-async def proxy_m3u8(url: str, headers: dict):
+async def proxy_m3u8(url: str, headers: dict, proxy_base_url: str):
     """
     Fetches the M3U8 playlist using curl_cffi (Chrome TLS impersonation)
     and rewrites URLs so Jellyfin requests segments through our proxy.
@@ -102,7 +104,7 @@ async def proxy_m3u8(url: str, headers: dict):
             logger.error("M3U8 fetch failed: %d — %s", response.status_code, response.text[:200])
             return ""
         
-        return rewrite_m3u8(response.text, str(response.url))
+        return rewrite_m3u8(response.text, str(response.url), proxy_base_url)
         
     except Exception as e:
         logger.error("Proxy M3U8 error: %s", e, exc_info=True)

@@ -234,7 +234,8 @@ async def ppv_proxy_stream(path: str, request: Request):
         
         # Proxy the m3u8 content
         logger.info(f"PPV GET: proxying m3u8 from {url[:120]}")
-        m3u8_content = await proxy_m3u8(url, headers)
+        proxy_base_url = str(request.base_url).rstrip('/')
+        m3u8_content = await proxy_m3u8(url, headers, proxy_base_url)
         
         if m3u8_content:
             return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
@@ -274,7 +275,9 @@ async def stream_event(event_path: str, request: Request):
         logger.info("GET: serving from cache: %s", cached["url"][:120])
         stream_headers_cache[event_path] = cached["headers"]
         stream_headers_cache["latest"] = cached["headers"]
-        m3u8_content = await proxy_m3u8(cached["url"], cached["headers"])
+        
+        proxy_base_url = str(request.base_url).rstrip('/')
+        m3u8_content = await proxy_m3u8(cached["url"], cached["headers"], proxy_base_url)
         if m3u8_content:
             return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
         else:
@@ -302,12 +305,13 @@ async def stream_event(event_path: str, request: Request):
     stream_headers_cache["latest"] = headers
     
     # Use captured content if available (avoids refetch + TLS fingerprint issues)
+    proxy_base_url = str(request.base_url).rstrip('/')
     if captured_content:
         logger.info("GET: using captured m3u8 content (%d bytes)", len(captured_content))
-        m3u8_content = rewrite_m3u8(captured_content, url)
+        m3u8_content = rewrite_m3u8(captured_content, url, proxy_base_url)
     else:
         logger.info("GET: no captured content, fetching via proxy")
-        m3u8_content = await proxy_m3u8(url, headers)
+        m3u8_content = await proxy_m3u8(url, headers, proxy_base_url)
     
     if not m3u8_content:
         logger.error("GET: proxy_m3u8 returned empty content for %s", url[:120])
@@ -317,11 +321,12 @@ async def stream_event(event_path: str, request: Request):
 
 
 @app.api_route("/proxy/m3u8/{b64_url}.m3u8", methods=["GET", "HEAD"])
-async def handle_proxy_m3u8(b64_url: str):
+async def handle_proxy_m3u8(b64_url: str, request: Request):
     b64_url += "=" * ((4 - len(b64_url) % 4) % 4)
     url = base64.urlsafe_b64decode(b64_url).decode('utf-8')
     headers = stream_headers_cache.get("latest", {})
-    m3u8_content = await proxy_m3u8(url, headers)
+    proxy_base_url = str(request.base_url).rstrip('/')
+    m3u8_content = await proxy_m3u8(url, headers, proxy_base_url)
     return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
 
 
