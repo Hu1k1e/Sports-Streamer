@@ -7,6 +7,7 @@ from fastapi.responses import PlainTextResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 from scraper import get_live_events, get_all_events, get_sports, get_stream_url
+from scraper_sportsurge import get_sportsurge_events, get_sportsurge_stream
 from proxy import proxy_m3u8, proxy_media, rewrite_m3u8
 from config import PROXY_HOST, STREAM_CACHE_TTL, STREAMED_PK_URL, EPG_DEFAULT_DURATION_HOURS
 
@@ -287,3 +288,72 @@ if __name__ == "__main__":
     import uvicorn
     # When running locally without Docker
     uvicorn.run(app, host="0.0.0.0", port=5000)
+
+
+@app.get("/sportsurge.m3u")
+async def generate_sportsurge_playlist(request: Request):
+    events = await get_sportsurge_events()
+    base_url = str(request.base_url).rstrip('/')
+    
+    m3u = ["#EXTM3U"]
+    for event in events:
+        logo_url = f"{base_url}/api/images/badge/default"
+        title = event['title']
+        if event.get('is_live'):
+            title = "[LIVE] " + title
+            
+        m3u.append(f'#EXTINF:-1 tvg-id="{event["id"]}" tvg-name="{event["title"]}" tvg-logo="{logo_url}" group-title="{event["sport"]}",{title}')
+        m3u.append(f"{base_url}/stream/sportsurge/{event['id']}")
+        
+    return Response(content="\n".join(m3u), media_type="application/vnd.apple.mpegurl")
+
+
+@app.get("/sportsurge.xml")
+async def generate_sportsurge_epg():
+    events = await get_sportsurge_events()
+    
+    xml = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv>']
+    
+    for event in events:
+        xml.append(f'  <channel id="{event["id"]}">')
+        xml.append(f'    <display-name>{_xml_escape(event["title"])}</display-name>')
+        xml.append(f'  </channel>')
+        
+        # We don\'t have real times for sportsurge, so just use current time to +24h
+        start_time = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S +0000")
+        stop_time = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y%m%d%H%M%S +0000")
+        
+        xml.append(f'  <programme start="{start_time}" stop="{stop_time}" channel="{event["id"]}">')
+        xml.append(f'    <title lang="en">{_xml_escape(event["title"])}</title>')
+        xml.append(f'    <desc lang="en">{_xml_escape(event["sport"])} - Watch Live on Sportsurge</desc>')
+        xml.append(f'  </programme>')
+        
+    xml.append('</tv>')
+    return Response(content="\n".join(xml), media_type="application/xml")
+
+
+@app.route("/stream/sportsurge/{event_id}", methods=["GET", "HEAD"])
+async def stream_sportsurge_event(request: Request, event_id: str):
+    if request.method == "HEAD":
+        return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl"})
+        
+    logger.info(f"Sportsurge GET request for {event_id}")
+    stream_data = await get_sportsurge_stream(event_id)
+    
+    if not stream_data or not stream_data.get("url"):
+        return Response(content="Stream not found or offline", status_code=404)
+        
+    url = stream_data["url"]
+    headers = stream_data["headers"]
+    
+    # Store headers for segment proxying
+    stream_headers_cache[f"sportsurge-{event_id}"] = headers
+    stream_headers_cache["latest"] = headers
+    
+    proxy_base_url = str(request.base_url).rstrip('/')
+    m3u8_content = await proxy_m3u8(url, headers, proxy_base_url)
+    
+    if m3u8_content:
+        return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
+    return Response(content="Failed to proxy sportsurge m3u8", status_code=500)
+
