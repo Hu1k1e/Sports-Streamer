@@ -2,9 +2,11 @@ import time
 import logging
 import base64
 from datetime import datetime, timezone, timedelta
-from fastapi import FastAPI, Response, Request
+from fastapi import FastAPI, Response, Request, HTTPException
+from fastapi.responses import PlainTextResponse, RedirectResponse
 from fastapi.middleware.cors import CORSMiddleware
 from scraper import get_live_events, get_all_events, get_sports, get_stream_url
+from scraper_ppv import generate_ppv_m3u, generate_ppv_epg, fetch_ppv_m3u8_url
 from proxy import proxy_m3u8, proxy_media, rewrite_m3u8
 from config import PROXY_HOST, STREAM_CACHE_TTL, STREAMED_PK_URL, EPG_DEFAULT_DURATION_HOURS
 
@@ -181,6 +183,45 @@ async def generate_epg():
     
     logger.info("Generated EPG XMLTV with %d channels", len(events))
     return Response(content="\n".join(xml), media_type="application/xml")
+
+
+@app.get("/ppv.m3u", response_class=PlainTextResponse)
+async def get_ppv_m3u_playlist():
+    """Generates an M3U playlist specifically for PPV.to."""
+    try:
+        m3u = await generate_ppv_m3u()
+        return m3u
+    except Exception as e:
+        logger.error(f"Error generating PPV M3U: {e}")
+        return "#EXTM3U\n"
+
+
+@app.get("/ppv.xml")
+async def get_ppv_epg():
+    """Generates an XMLTV EPG specifically for PPV.to."""
+    try:
+        epg = await generate_ppv_epg()
+        return Response(content=epg, media_type="application/xml")
+    except Exception as e:
+        logger.error(f"Error generating PPV EPG: {e}")
+        return Response(content='<?xml version="1.0" encoding="UTF-8"?><tv></tv>', media_type="application/xml")
+
+
+@app.get("/ppv/stream/{path:path}")
+async def ppv_proxy_stream(path: str):
+    """
+    Proxies a PPV.to stream by resolving the .m3u8 using Playwright
+    and then redirecting to it.
+    """
+    embed_url = f"https://embedindia.st/embed/{path}"
+    m3u8_url = await fetch_ppv_m3u8_url(embed_url)
+    
+    if m3u8_url:
+        # Redirect to the actual .m3u8 so the client player handles it
+        return RedirectResponse(url=m3u8_url, status_code=302)
+    else:
+        logger.error(f"Failed to extract M3U8 for PPV path: {path}")
+        raise HTTPException(status_code=404, detail="Stream not found or offline")
 
 
 @app.api_route("/stream/{event_path:path}", methods=["GET", "HEAD"])
