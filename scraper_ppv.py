@@ -141,13 +141,28 @@ async def fetch_ppv_m3u8_url(embed_url: str) -> dict:
     """
     m3u8_url = None
     m3u8_headers = {}
-    async with async_playwright() as p:
-        # headless=False was needed in our test, but we can try headless=True with args
-        # But we will use headless=True with standard args to bypass
-        browser = await p.chromium.launch(
-            headless=True,
-            args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
-        )
+    
+    # We must use headless=False to bypass embedindia's strict bot protection.
+    # To run headless=False inside a Docker container, we use a virtual display (Xvfb).
+    import sys
+    display = None
+    if sys.platform == "linux" or sys.platform == "linux2":
+        try:
+            from pyvirtualdisplay import Display
+            display = Display(visible=0, size=(1280, 720))
+            display.start()
+        except ImportError:
+            logger.warning("pyvirtualdisplay not installed. Headless=False might fail if no X server is available.")
+        except Exception as e:
+            logger.error(f"Failed to start virtual display: {e}")
+
+    try:
+        async with async_playwright() as p:
+            # Note: headless=False is critical here!
+            browser = await p.chromium.launch(
+                headless=False,
+                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+            )
         context = await browser.new_context(
             user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
         )
@@ -188,6 +203,9 @@ async def fetch_ppv_m3u8_url(embed_url: str) -> dict:
             logger.error(f"Error resolving PPV M3U8 for {embed_url}: {e}")
         finally:
             await browser.close()
+    finally:
+        if display is not None:
+            display.stop()
             
     if not m3u8_url:
         return None
