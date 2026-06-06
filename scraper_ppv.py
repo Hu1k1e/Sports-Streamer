@@ -182,29 +182,26 @@ async def fetch_ppv_m3u8_url(embed_url: str) -> dict:
 
             try:
                 logger.info(f"fetch_ppv_m3u8_url: Navigating to PPV embed: {embed_url}")
-                await page.goto(embed_url, timeout=30000, referer="https://ppv.to/")
-                logger.info("fetch_ppv_m3u8_url: Page loaded successfully. Removing ad overlay...")
+                await page.goto(embed_url, timeout=15000, referer="https://ppv.to/", wait_until="domcontentloaded")
+                logger.info("fetch_ppv_m3u8_url: Page loaded successfully. Clicking play...")
                 
-                # Remove ad overlay if exists
+                # Immediately remove ad overlay and click
                 await page.evaluate("""
                     const overlay = document.getElementById('dontfoid');
                     if (overlay) overlay.remove();
                 """)
-                logger.info("fetch_ppv_m3u8_url: Overlay removed. Waiting to click center...")
-                
-                # Wait a bit then click the center to trigger play
-                await page.wait_for_timeout(2000)
                 await page.mouse.click(400, 300)
-                await page.wait_for_timeout(500)
+                await asyncio.sleep(0.1)
                 await page.mouse.click(400, 300)
-                logger.info("fetch_ppv_m3u8_url: Clicked center. Waiting up to 15s for m3u8 intercept...")
                 
-                # Wait up to 15 seconds for the m3u8 request to be intercepted
-                for _ in range(30):
+                logger.info("fetch_ppv_m3u8_url: Clicked center. Waiting up to 5s for m3u8 intercept...")
+                
+                # Wait up to 5 seconds for the m3u8 request to be intercepted
+                for _ in range(50):
                     if m3u8_url:
                         logger.info("fetch_ppv_m3u8_url: M3U8 was found, breaking wait loop.")
                         break
-                    await asyncio.sleep(0.5)
+                    await asyncio.sleep(0.1)
                 
                 if not m3u8_url:
                     logger.warning("fetch_ppv_m3u8_url: Finished waiting but m3u8 was never found! Taking HTML dump for debugging.")
