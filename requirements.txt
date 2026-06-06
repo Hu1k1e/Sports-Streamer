@@ -5,4 +5,3 @@ playwright-stealth
 curl_cffi
 httpx
 
-pyvirtualdisplay==3.0
