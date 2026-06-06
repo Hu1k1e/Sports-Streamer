@@ -11,7 +11,8 @@ WORKDIR /app
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# Install Playwright specific dependencies (just chromium to save space)
+# Install Playwright specific dependencies and xvfb for headless=False execution
+RUN apt-get update && apt-get install -y xvfb python3-tk && rm -rf /var/lib/apt/lists/*
 RUN playwright install chromium
 
 # Copy app files

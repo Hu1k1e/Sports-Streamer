@@ -133,6 +133,7 @@ async def generate_ppv_epg() -> str:
     return "\n".join(lines)
 
 from playwright.async_api import async_playwright
+from playwright_lock import playwright_lock
 
 async def fetch_ppv_m3u8_url(embed_url: str) -> dict:
     """
@@ -158,61 +159,63 @@ async def fetch_ppv_m3u8_url(embed_url: str) -> dict:
 
     try:
         logger.info(f"fetch_ppv_m3u8_url: Launching playwright...")
-        async with async_playwright() as p:
-            # Note: headless=False is critical here!
-            browser = await p.chromium.launch(
-                headless=False,
-                args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
-            )
-            logger.info(f"fetch_ppv_m3u8_url: Browser launched successfully.")
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
-            )
-            page = await context.new_page()
-
-            async def handle_request(route, request):
-                nonlocal m3u8_url, m3u8_headers
-                if ".m3u8" in request.url and not m3u8_url:
-                    logger.info(f"fetch_ppv_m3u8_url: Intercepted M3U8 -> {request.url[:120]}")
-                    m3u8_url = request.url
-                    m3u8_headers = request.headers
-                await route.continue_()
-
-            await page.route("**/*", handle_request)
-
-            try:
-                logger.info(f"fetch_ppv_m3u8_url: Navigating to PPV embed: {embed_url}")
-                await page.goto(embed_url, timeout=15000, referer="https://ppv.to/", wait_until="domcontentloaded")
-                logger.info("fetch_ppv_m3u8_url: Page loaded successfully. Clicking play...")
+        async with playwright_lock:
+            async with async_playwright() as p:
+                # Note: headless=False is critical here!
+                browser = await p.chromium.launch(
+                    headless=False,
+                    args=["--disable-blink-features=AutomationControlled", "--no-sandbox"]
+                )
+                logger.info(f"fetch_ppv_m3u8_url: Browser launched successfully.")
+                context = await browser.new_context(
+                    user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/114.0.0.0 Safari/537.36"
+                )
+                page = await context.new_page()
                 
-                # Immediately remove ad overlay and click
-                await page.evaluate("""
-                    const overlay = document.getElementById('dontfoid');
-                    if (overlay) overlay.remove();
-                """)
-                await page.mouse.click(400, 300)
-                await asyncio.sleep(0.1)
-                await page.mouse.click(400, 300)
-                
-                logger.info("fetch_ppv_m3u8_url: Clicked center. Waiting up to 5s for m3u8 intercept...")
-                
-                # Wait up to 5 seconds for the m3u8 request to be intercepted
-                for _ in range(50):
-                    if m3u8_url:
-                        logger.info("fetch_ppv_m3u8_url: M3U8 was found, breaking wait loop.")
-                        break
-                    await asyncio.sleep(0.1)
-                
-                if not m3u8_url:
-                    logger.warning("fetch_ppv_m3u8_url: Finished waiting but m3u8 was never found! Taking HTML dump for debugging.")
-                    html = await page.content()
-                    logger.debug(f"fetch_ppv_m3u8_url HTML DUMP (first 1000 chars): {html[:1000]}")
+                async def handle_request(route, request):
+                    nonlocal m3u8_url, m3u8_headers
+                    if ".m3u8" in request.url and not m3u8_url:
+                        m3u8_url = request.url
+                        m3u8_headers = request.headers
+                    await route.continue_()
                     
-            except Exception as e:
-                logger.error(f"fetch_ppv_m3u8_url: Error navigating or clicking: {e}", exc_info=True)
-            finally:
-                logger.info("fetch_ppv_m3u8_url: Closing browser.")
-                await browser.close()
+                await page.route("**/*", handle_request)
+    
+                try:
+                    logger.info(f"fetch_ppv_m3u8_url: Navigating to PPV embed: {embed_url}")
+                    await page.goto(embed_url, timeout=15000, referer="https://ppv.to/", wait_until="domcontentloaded")
+                    logger.info("fetch_ppv_m3u8_url: Page loaded successfully. Clicking play...")
+                    
+                    # Immediately remove ad overlay and click
+                    await page.evaluate("""
+                        const overlay = document.getElementById('dontfoid');
+                        if (overlay) overlay.remove();
+                    """)
+                    await page.mouse.click(400, 300)
+                    await asyncio.sleep(0.1)
+                    await page.mouse.click(400, 300)
+                    
+                    logger.info("fetch_ppv_m3u8_url: Clicked center. Waiting up to 5s for m3u8 intercept...")
+                    
+                    # Wait up to 5 seconds for the m3u8 request to be intercepted
+                    for _ in range(50):
+                        if m3u8_url:
+                            logger.info("fetch_ppv_m3u8_url: M3U8 was found, breaking wait loop.")
+                            break
+                        await asyncio.sleep(0.1)
+                    
+                    if not m3u8_url:
+                        logger.warning("fetch_ppv_m3u8_url: Finished waiting but m3u8 was never found! Taking HTML dump for debugging.")
+                        html_content = await page.content()
+                        with open("dump.html", "w", encoding="utf-8") as f:
+                            f.write(html_content)
+                        logger.warning("fetch_ppv_m3u8_url: Wrote dump.html.")
+                        
+                except Exception as e:
+                    logger.error(f"fetch_ppv_m3u8_url: Playwright error: {e}", exc_info=True)
+                finally:
+                    logger.info("fetch_ppv_m3u8_url: Closing browser.")
+                    await browser.close()
     finally:
         if display is not None:
             display.stop()

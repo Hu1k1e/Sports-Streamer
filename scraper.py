@@ -324,79 +324,80 @@ async def get_stream_url(match_id: str):
         return {"url": None, "headers": {}, "content": None}
 
     # Step 2: Use Playwright just to evaluate the embed page and capture m3u8
-    async with Stealth().use_async(async_playwright()) as p:
-        browser = await p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
-        context = await browser.new_context(user_agent=DEFAULT_HEADERS["User-Agent"])
-        
-        for embed_url in embed_urls:
-            logger.info("Navigating to embed URL: %s", embed_url)
-            page = await context.new_page()
+    async with playwright_lock:
+        async with Stealth().use_async(async_playwright()) as p:
+            browser = await p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
+            context = await browser.new_context(user_agent=DEFAULT_HEADERS["User-Agent"])
+            
+            for embed_url in embed_urls:
+                logger.info("Navigating to embed URL: %s", embed_url)
+                page = await context.new_page()
 
-            m3u8_url = None
-            m3u8_headers = {}
-            m3u8_content = None
+                m3u8_url = None
+                m3u8_headers = {}
+                m3u8_content = None
 
-            async def on_response(response):
-                nonlocal m3u8_url, m3u8_headers, m3u8_content
-                req_url = response.url
-                if ".m3u8" in req_url and not m3u8_url and response.status == 200:
-                    m3u8_url = req_url
-                    m3u8_headers = dict(response.request.headers)
-                    logger.info("  👉 Captured VALID m3u8 URL: %s", req_url[:150])
-                    try:
-                        body = await response.text()
-                        if body and "#EXTM3U" in body:
-                            m3u8_content = body
-                            logger.info("  ✓ Captured m3u8 response body (%d bytes)", len(body))
-                    except Exception:
-                        pass
-
-            page.on("response", on_response)
-
-            try:
-                await page.goto(embed_url, wait_until="domcontentloaded", timeout=20000)
-                logger.info("Embed page loaded")
-
-                # Wait for m3u8 network request
-                for _ in range(15):
-                    if m3u8_url:
-                        break
-                    await page.wait_for_timeout(1000)
-
-                # If not yet captured, try clicking video/player elements
-                if not m3u8_url:
-                    logger.info("Trying to click video/player elements...")
-                    for selector in ["video", ".player", "[class*='player']", ".video-container", "iframe", "body"]:
-                        if m3u8_url:
-                            break
+                async def on_response(response):
+                    nonlocal m3u8_url, m3u8_headers, m3u8_content
+                    req_url = response.url
+                    if ".m3u8" in req_url and not m3u8_url and response.status == 200:
+                        m3u8_url = req_url
+                        m3u8_headers = dict(response.request.headers)
+                        logger.info("  👉 Captured VALID m3u8 URL: %s", req_url[:150])
                         try:
-                            element = await page.query_selector(selector)
-                            if element:
-                                await element.click(timeout=2000)
-                                await page.wait_for_timeout(2000)
+                            body = await response.text()
+                            if body and "#EXTM3U" in body:
+                                m3u8_content = body
+                                logger.info("  ✓ Captured m3u8 response body (%d bytes)", len(body))
                         except Exception:
                             pass
 
-                if m3u8_url:
-                    # Capture cookies and attach to headers for proxy
-                    cookies = await context.cookies()
-                    cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
-                    if cookie_str:
-                        m3u8_headers["Cookie"] = cookie_str
+                page.on("response", on_response)
 
-                    logger.info("=== get_stream_url END (SUCCESS) ===")
+                try:
+                    await page.goto(embed_url, wait_until="domcontentloaded", timeout=20000)
+                    logger.info("Embed page loaded")
+
+                    # Wait for m3u8 network request
+                    for _ in range(15):
+                        if m3u8_url:
+                            break
+                        await page.wait_for_timeout(1000)
+
+                    # If not yet captured, try clicking video/player elements
+                    if not m3u8_url:
+                        logger.info("Trying to click video/player elements...")
+                        for selector in ["video", ".player", "[class*='player']", ".video-container", "iframe", "body"]:
+                            if m3u8_url:
+                                break
+                            try:
+                                element = await page.query_selector(selector)
+                                if element:
+                                    await element.click(timeout=2000)
+                                    await page.wait_for_timeout(2000)
+                            except Exception:
+                                pass
+
+                    if m3u8_url:
+                        # Capture cookies and attach to headers for proxy
+                        cookies = await context.cookies()
+                        cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
+                        if cookie_str:
+                            m3u8_headers["Cookie"] = cookie_str
+
+                        logger.info("=== get_stream_url END (SUCCESS) ===")
+                        await page.close()
+                        await browser.close()
+                        return {"url": m3u8_url, "headers": m3u8_headers, "content": m3u8_content}
+
+                    logger.warning("Failed to capture m3u8 on %s. Trying next embed URL...", embed_url)
+                except Exception as e:
+                    logger.error("Error evaluating embed URL %s: %s", embed_url, e)
+                finally:
                     await page.close()
-                    await browser.close()
-                    return {"url": m3u8_url, "headers": m3u8_headers, "content": m3u8_content}
-
-                logger.warning("Failed to capture m3u8 on %s. Trying next embed URL...", embed_url)
-            except Exception as e:
-                logger.error("Error evaluating embed URL %s: %s", embed_url, e)
-            finally:
-                await page.close()
-                
-        # If we exhausted all embed URLs
-        await browser.close()
-        
+                    
+            # If we exhausted all embed URLs
+            await browser.close()
+            
     logger.warning("=== get_stream_url END (FAILED ALL SOURCES) ===")
     return {"url": None, "headers": {}, "content": None}
