@@ -155,9 +155,16 @@ async def get_all_events() -> list[dict]:
 
             events = _parse_events(all_data, live_ids=live_ids)
             
-            # Filter out events that have no actual streams available
+            # Filter out events that have no actual streams available, UNLESS they are live
             semaphore = asyncio.Semaphore(15)
-            tasks = [_has_any_stream(client, event, semaphore) for event in events]
+            tasks = []
+            for event in events:
+                if event["id"] in live_ids:
+                    # Always include live games
+                    tasks.append(asyncio.sleep(0, result=True))
+                else:
+                    tasks.append(_has_any_stream(client, event, semaphore))
+            
             results = await asyncio.gather(*tasks)
             
             valid_events = [ev for ev, has_stream in zip(events, results) if has_stream]
