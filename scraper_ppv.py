@@ -3,7 +3,7 @@ import httpx
 import logging
 import time
 from typing import List, Dict, Any
-from config import SERVER_HOST, SERVER_PORT, CACHE_MAX_AGE_MINUTES
+from config import PROXY_HOST
 import json
 import os
 
@@ -20,7 +20,7 @@ _cache = {
 async def get_ppv_streams() -> List[Dict[str, Any]]:
     """Fetch live streams from ppv.to API with caching."""
     current_time = time.time()
-    if _cache["streams"] is not None and (current_time - _cache["last_updated"]) < (CACHE_MAX_AGE_MINUTES * 60):
+    if _cache["streams"] is not None and (current_time - _cache["last_updated"]) < (5 * 60):
         return _cache["streams"]
 
     logger.info(f"Fetching PPV streams from {PPV_API_STREAMS}")
@@ -59,21 +59,7 @@ async def generate_ppv_m3u() -> str:
     lines = ["#EXTM3U"]
     
     # We will point the M3U to our proxy
-    host = os.getenv("HOST", SERVER_HOST)
-    port = os.getenv("PORT", str(SERVER_PORT))
-    
-    # Check if host is already a full URL or needs HTTP prefix
-    if not host.startswith("http"):
-        base_url = f"http://{host}:{port}"
-    else:
-        # If host already has http(s)://, don't append port unless needed
-        if str(port) not in host:
-            base_url = f"{host}:{port}"
-        else:
-            base_url = host
-            
-    # Normalize base_url to not have trailing slash
-    base_url = base_url.rstrip('/')
+    base_url = PROXY_HOST.rstrip('/')
     
     for event in events:
         title = event.get("name", "Unknown Match")
