@@ -211,14 +211,30 @@ async def get_ppv_epg():
 async def ppv_proxy_stream(path: str):
     """
     Proxies a PPV.to stream by resolving the .m3u8 using Playwright
-    and then redirecting to it.
+    and then proxying the M3U8 and its segments.
     """
     embed_url = f"https://embedindia.st/embed/{path}"
-    m3u8_url = await fetch_ppv_m3u8_url(embed_url)
     
-    if m3u8_url:
-        # Redirect to the actual .m3u8 so the client player handles it
-        return RedirectResponse(url=m3u8_url, status_code=302)
+    # fetch_ppv_m3u8_url returns a dict {"url": m3u8_url, "headers": headers}
+    stream_data = await fetch_ppv_m3u8_url(embed_url)
+    
+    if stream_data and stream_data.get("url"):
+        url = stream_data["url"]
+        headers = stream_data["headers"]
+        
+        # Store headers for segment proxying
+        stream_headers_cache[path] = headers
+        stream_headers_cache["latest"] = headers
+        
+        # Proxy the m3u8 content
+        logger.info(f"PPV GET: proxying m3u8 from {url[:120]}")
+        m3u8_content = await proxy_m3u8(url, headers)
+        
+        if m3u8_content:
+            return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
+        else:
+            logger.error(f"PPV GET: proxy_m3u8 returned empty content for {url[:120]}")
+            return Response(content="Failed to fetch stream playlist", status_code=502)
     else:
         logger.error(f"Failed to extract M3U8 for PPV path: {path}")
         raise HTTPException(status_code=404, detail="Stream not found or offline")

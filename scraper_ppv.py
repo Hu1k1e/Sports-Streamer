@@ -132,12 +132,13 @@ async def generate_ppv_epg() -> str:
 
 from playwright.async_api import async_playwright
 
-async def fetch_ppv_m3u8_url(embed_url: str) -> str:
+async def fetch_ppv_m3u8_url(embed_url: str) -> dict:
     """
     Use Playwright to resolve the actual .m3u8 link for ppv.to streams.
     This requires dismissing an ad overlay.
     """
     m3u8_url = None
+    m3u8_headers = {}
     async with async_playwright() as p:
         # headless=False was needed in our test, but we can try headless=True with args
         # But we will use headless=True with standard args to bypass
@@ -151,9 +152,10 @@ async def fetch_ppv_m3u8_url(embed_url: str) -> str:
         page = await context.new_page()
 
         async def handle_request(route, request):
-            nonlocal m3u8_url
+            nonlocal m3u8_url, m3u8_headers
             if ".m3u8" in request.url and not m3u8_url:
                 m3u8_url = request.url
+                m3u8_headers = request.headers
             await route.continue_()
 
         await page.route("**/*", handle_request)
@@ -185,4 +187,10 @@ async def fetch_ppv_m3u8_url(embed_url: str) -> str:
         finally:
             await browser.close()
             
-    return m3u8_url
+    if not m3u8_url:
+        return None
+        
+    return {
+        "url": m3u8_url,
+        "headers": m3u8_headers
+    }
