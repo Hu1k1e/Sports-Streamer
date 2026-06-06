@@ -1,4 +1,4 @@
-FROM python:3.11-slim
+FROM mcr.microsoft.com/playwright/python:v1.44.0-jammy
 
 # Environment settings
 ENV PYTHONUNBUFFERED=1
@@ -8,9 +8,6 @@ WORKDIR /app
 # Copy requirements and install
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-
-# Install Playwright chromium and its OS dependencies
-RUN playwright install chromium --with-deps
 
 # Copy app files
 COPY . .
