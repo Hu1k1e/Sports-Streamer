@@ -106,6 +106,19 @@ async def get_webcric_stream(match_id: str):
             g_match = re.search(r"g\s*=\s*['\"]([^'\"]+)['\"]", response.text)
             
             if not (channel_match and g_match):
+                # Fallback: check if there's an iframe to another .htm page (like willow.htm)
+                iframe_match = re.search(r'<iframe[^>]+src=["\']([^"\']+\.htm)["\']', response.text)
+                if iframe_match:
+                    iframe_src = iframe_match.group(1)
+                    iframe_url = f"https://go.webcric.com/{iframe_src}"
+                    logger.info(f"Variables not found, fetching iframe {iframe_src} for {match_id}")
+                    iframe_resp = await client.get(iframe_url, headers={"User-Agent": "Mozilla/5.0", "Referer": url})
+                    iframe_resp.raise_for_status()
+                    
+                    channel_match = re.search(r"channel\s*=\s*['\"]([^'\"]+)['\"]", iframe_resp.text)
+                    g_match = re.search(r"g\s*=\s*['\"]([^'\"]+)['\"]", iframe_resp.text)
+            
+            if not (channel_match and g_match):
                 logger.error(f"Could not extract channel/g for {match_id}. Stream might be offline.")
                 return None
                 
@@ -141,7 +154,7 @@ async def get_webcric_stream(match_id: str):
             return {
                 "url": m3u8_url,
                 "headers": {
-                    "User-Agent": USER_AGENT,
+                    "User-Agent": "Mozilla/5.0",
                     "Referer": "https://one.superover1.top/"
                 }
             }
