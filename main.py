@@ -180,6 +180,8 @@ async def generate_epg():
         xml.append(f'  <programme start="{start_str}" stop="{end_str}" channel="{match_id}">')
         xml.append(f'    <title lang="en">{safe_name}</title>')
         xml.append(f'    <desc lang="en">Live {group_title} stream for {safe_name}</desc>')
+        if logo:
+            xml.append(f'    <icon src="{_xml_escape(logo)}" />')
         xml.append(f'    <category lang="en">{_xml_escape(group_title)}</category>')
         xml.append(f'  </programme>')
         
@@ -322,6 +324,9 @@ async def generate_webcric_epg(request: Request):
         xml.append(f'  <programme start="{start_str}" stop="{end_str}" channel="{event["id"]}">')
         xml.append(f'    <title lang="en">{_xml_escape(event["title"])}</title>')
         xml.append(f'    <desc lang="en">Watch Live on WebCric</desc>')
+        logo = event.get('logo_url')
+        if logo:
+            xml.append(f'    <icon src="{_xml_escape(logo)}" />')
         xml.append(f'    <category lang="en">Cricket</category>')
         xml.append(f'  </programme>')
         
@@ -426,6 +431,8 @@ async def generate_sportsurge_epg(request: Request):
         xml.append(f'  <programme start="{start_time}" stop="{stop_time}" channel="{event["id"]}">')
         xml.append(f'    <title lang="en">{_xml_escape(event["title"])}</title>')
         xml.append(f'    <desc lang="en">{_xml_escape(event["sport"])} - Watch Live on Sportsurge</desc>')
+        if logo_url:
+            xml.append(f'    <icon src="{_xml_escape(logo_url)}" />')
         xml.append(f'  </programme>')
         
     xml.append('</tv>')
