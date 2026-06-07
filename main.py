@@ -336,11 +336,21 @@ async def webcric_stream_proxy(match_id: str, request: Request):
     Proxy route for WebCric that intercepts the M3U8 payload
     and injects proxy paths for segment URLs.
     """
+    if request.method == "HEAD":
+        return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl"})
+        
     m3u8_data = await get_webcric_stream(match_id)
     if not m3u8_data:
         return Response("Stream not found or could not be decrypted", status_code=404)
         
-    return await proxy_m3u8(m3u8_data["url"], request, extra_headers=m3u8_data["headers"])
+    proxy_base_url = str(request.base_url).rstrip('/')
+    headers = m3u8_data["headers"]
+    stream_headers_cache["latest"] = headers
+    
+    m3u8_content = await proxy_m3u8(m3u8_data["url"], headers, proxy_base_url)
+    if m3u8_content:
+        return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
+    return Response(content="Failed to proxy webcric m3u8", status_code=500)
 
 
 if __name__ == "__main__":
