@@ -32,8 +32,8 @@ async def get_webcric_events():
             response = await client.get("https://go.webcric.com/index.html", headers={"User-Agent": "Mozilla/5.0"})
             response.raise_for_status()
             
-            # split by 'card-block' to iterate over match cards
-            cards = response.text.split('card-block')[1:]
+            # split by '<div class="card ' to iterate over match cards
+            cards = response.text.split('<div class="card ')[1:]
             
             for c in cards:
                 # Extract match name from <strong> tag
@@ -81,9 +81,18 @@ async def get_webcric_events():
                     else:
                         match_id = filename.split('.')[0]
                         
+                    # Extract logo image
+                    img_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', c, re.IGNORECASE)
+                    logo_url = ""
+                    if img_match:
+                        logo_url = img_match.group(1).strip()
+                        if not logo_url.startswith('http'):
+                            logo_url = f"https://go.webcric.com/{logo_url}"
+                            
                     events.append({
                         "id": match_id,
-                        "title": match_name
+                        "title": match_name,
+                        "logo_url": logo_url
                     })
             
             # De-duplicate events by ID while preserving order

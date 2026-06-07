@@ -289,13 +289,11 @@ async def handle_proxy_media(filename: str):
 @app.api_route("/webcric.m3u", methods=["GET", "HEAD"])
 async def generate_webcric_playlist(request: Request):
     events = await get_webcric_events()
-    streamed_events = await get_all_events()
     base_url = str(request.base_url).rstrip('/')
     
     m3u = ["#EXTM3U"]
     for event in events:
-        synced_logo = _sync_poster(event['title'], streamed_events)
-        logo_url = synced_logo or f"{base_url}/api/images/badge/default"
+        logo_url = event.get('logo_url') or f"{base_url}/api/images/badge/default"
         title = "[LIVE] " + event['title']
             
         m3u.append(f'#EXTINF:-1 tvg-id="{event["id"]}" tvg-name="{event["title"]}" tvg-logo="{logo_url}" group-title="Cricket",{title}')
@@ -306,16 +304,15 @@ async def generate_webcric_playlist(request: Request):
 @app.api_route("/webcric.xml", methods=["GET", "HEAD"])
 async def generate_webcric_epg(request: Request):
     events = await get_webcric_events()
-    streamed_events = await get_all_events()
     xml = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv generator-info-name="Streamed.pk Proxy">']
     
     for event in events:
         xml.append(f'  <channel id="{event["id"]}">')
         xml.append(f'    <display-name>{_xml_escape(event["title"])}</display-name>')
         
-        synced_logo = _sync_poster(event['title'], streamed_events)
-        if synced_logo:
-            xml.append(f'    <icon src="{_xml_escape(synced_logo)}" />')
+        logo = event.get('logo_url')
+        if logo:
+            xml.append(f'    <icon src="{_xml_escape(logo)}" />')
         xml.append(f'  </channel>')
         
         now = datetime.now(timezone.utc)
