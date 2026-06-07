@@ -8,6 +8,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 from scraper import get_live_events, get_all_events, get_sports, get_stream_url
 from scraper_sportsurge import get_sportsurge_events, get_sportsurge_stream
+from scraper_crichd import get_crichd_events, get_crichd_stream
 from proxy import proxy_m3u8, proxy_media, rewrite_m3u8
 from config import PROXY_HOST, STREAM_CACHE_TTL, STREAMED_PK_URL, EPG_DEFAULT_DURATION_HOURS
 
@@ -282,6 +283,75 @@ async def handle_proxy_media(filename: str):
     headers = stream_headers_cache.get("latest", {})
     media_type = "video/MP2T" if is_ts else "application/octet-stream"
     return await proxy_media(url, headers, media_type)
+
+
+
+@app.api_route("/crichd.m3u", methods=["GET", "HEAD"])
+async def generate_crichd_playlist(request: Request):
+    events = await get_crichd_events()
+    streamed_events = await get_all_events()
+    base_url = str(request.base_url).rstrip('/')
+    
+    m3u = ["#EXTM3U"]
+    for event in events:
+        if not event.get('is_live'):
+            continue
+            
+        synced_logo = _sync_poster(event['title'], streamed_events)
+        logo_url = synced_logo or f"{base_url}/api/images/badge/default"
+        title = "[LIVE] " + event['title']
+            
+        m3u.append(f'#EXTINF:-1 tvg-id="{event["id"]}" tvg-name="{event["title"]}" tvg-logo="{logo_url}" group-title="{event["sport"]}",{title}')
+        m3u.append(f"{base_url}/crichd/stream/{event['id']}")
+        
+    return Response(content="\n".join(m3u), media_type="application/vnd.apple.mpegurl")
+
+@app.api_route("/crichd.xml", methods=["GET", "HEAD"])
+async def generate_crichd_epg(request: Request):
+    events = await get_crichd_events()
+    streamed_events = await get_all_events()
+    xml = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv>']
+    
+    for event in events:
+        if not event.get('is_live'):
+            continue
+            
+        xml.append(f'  <channel id="{event["id"]}">')
+        xml.append(f'    <display-name>{_xml_escape(event["title"])}</display-name>')
+        
+        synced_logo = _sync_poster(event['title'], streamed_events)
+        if synced_logo:
+            xml.append(f'    <icon src="{_xml_escape(synced_logo)}" />')
+        xml.append(f'  </channel>')
+        
+        now = datetime.datetime.now(datetime.timezone.utc)
+        start_str = now.strftime('%Y%m%d%H%M%S +0000')
+        end_str = (now + datetime.timedelta(hours=24)).strftime('%Y%m%d%H%M%S +0000')
+        
+        xml.append(f'  <programme channel="{event["id"]}" start="{start_str}" stop="{end_str}">')
+        xml.append(f'    <title>{_xml_escape(event["title"])}</title>')
+        xml.append(f'    <category>{_xml_escape(event["sport"])}</category>')
+        xml.append(f'  </programme>')
+        
+    xml.append('</tv>')
+    return Response(content="\n".join(xml), media_type="application/xml")
+
+@app.api_route("/crichd/stream/{match_id}", methods=["GET", "HEAD"])
+async def crichd_stream_proxy(match_id: str, request: Request):
+    """
+    Proxy route for CricHD that intercepts the M3U8 payload
+    and injects proxy paths for segment URLs.
+    """
+    m3u8_url = await get_crichd_stream(match_id)
+    if not m3u8_url:
+        return Response("Stream not found or could not be decrypted", status_code=404)
+        
+    headers = {
+        "Referer": "https://1freecdn.xyz/",
+        "User-Agent": "Mozilla/5.0"
+    }
+    
+    return await proxy_m3u8(m3u8_url, request, extra_headers=headers)
 
 
 if __name__ == "__main__":
