@@ -301,7 +301,7 @@ async def generate_webcric_playlist(request: Request):
         m3u.append(f'#EXTINF:-1 tvg-id="{event["id"]}" tvg-name="{event["title"]}" tvg-logo="{logo_url}" group-title="Cricket",{title}')
         m3u.append(f"{base_url}/webcric/stream/{event['id']}")
         
-    return Response(content="\\n".join(m3u), media_type="application/vnd.apple.mpegurl")
+    return Response(content="\n".join(m3u), media_type="application/vnd.apple.mpegurl")
 
 @app.api_route("/webcric.xml", methods=["GET", "HEAD"])
 async def generate_webcric_epg(request: Request):
@@ -328,7 +328,7 @@ async def generate_webcric_epg(request: Request):
         xml.append(f'  </programme>')
         
     xml.append('</tv>')
-    return Response(content="\\n".join(xml), media_type="application/xml")
+    return Response(content="\n".join(xml), media_type="application/xml")
 
 @app.api_route("/webcric/stream/{match_id}", methods=["GET", "HEAD"])
 async def webcric_stream_proxy(match_id: str, request: Request):
