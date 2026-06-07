@@ -18,29 +18,59 @@ async def get_webcric_events():
             response = await client.get("https://go.webcric.com/index.html", headers={"User-Agent": "Mozilla/5.0"})
             response.raise_for_status()
             
-            # Extract matches using regex to be robust against missing BeautifulSoup dependencies
-            matches = re.findall(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', response.text, re.DOTALL)
+            # split by 'card-block' to iterate over match cards
+            cards = response.text.split('card-block')[1:]
             
-            for url, title_raw in matches:
-                title = re.sub(r'<[^>]+>', ' ', title_raw).strip()
-                title = ' '.join(title.split())
+            for c in cards:
+                # Extract match name from <strong> tag
+                h3_strong = re.search(r'<h3[^>]*>.*?<strong>(.*?)</strong>', c, re.DOTALL)
+                match_name = h3_strong.group(1).strip() if h3_strong else 'Unknown'
                 
-                # Filter for likely matches
-                if 'live' in url.lower() or 'live' in title.lower() or 'streaming' in title.lower() or 'v' in title.lower() or 'cricket' in title.lower() or 'stream' in url.lower() or url.endswith('.htm'):
-                    # The URL slug will be used as the match ID
-                    # e.g. "https://go.webcric.com/ipl-2025-cricket-live-streaming.htm" -> "ipl-2025-cricket-live-streaming"
-                    filename = url.split('/')[-1]
+                if match_name == 'Unknown':
+                    continue
+                    
+                # Clean up match name for XML safety
+                match_name = match_name.replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;')
+                    
+                links = re.findall(r'<a[^>]+href=["\']([^"\']+)["\'][^>]*>(.*?)</a>', c, re.DOTALL)
+                best_link = None
+                best_text = ''
+                
+                # Priority list for matching best quality stream names
+                priorities = [
+                    "hd", "willow", "tnt", "sky", "fox", "premier", "star", "astro", "sports",
+                    "high quality", "medium quality", "low quality"
+                ]
+                
+                current_priority = 999
+                
+                for url, text in links:
+                    text = re.sub(r'<[^>]+>', '', text).strip()
+                    text_lower = text.lower()
+                    
+                    if text_lower == "live stream":
+                        continue
+                        
+                    for idx, keyword in enumerate(priorities):
+                        if keyword in text_lower:
+                            if idx < current_priority:
+                                current_priority = idx
+                                best_link = url
+                                best_text = text
+                            break
+                            
+                if best_link:
+                    # extract the id from the link
+                    filename = best_link.split('/')[-1]
                     if filename.endswith('.htm'):
                         match_id = filename[:-4]
                     else:
                         match_id = filename.split('.')[0]
                         
-                    # Ignore matches with empty or garbage titles
-                    if title and len(title) > 3 and title.upper() != "MATCH END":
-                        events.append({
-                            "id": match_id,
-                            "title": title
-                        })
+                    events.append({
+                        "id": match_id,
+                        "title": match_name
+                    })
             
             # De-duplicate events by ID while preserving order
             seen = set()
