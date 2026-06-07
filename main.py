@@ -307,7 +307,7 @@ async def generate_webcric_playlist(request: Request):
 async def generate_webcric_epg(request: Request):
     events = await get_webcric_events()
     streamed_events = await get_all_events()
-    xml = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv>']
+    xml = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv generator-info-name="Streamed.pk Proxy">']
     
     for event in events:
         xml.append(f'  <channel id="{event["id"]}">')
@@ -322,9 +322,10 @@ async def generate_webcric_epg(request: Request):
         start_str = now.strftime('%Y%m%d%H%M%S +0000')
         end_str = (now + timedelta(hours=24)).strftime('%Y%m%d%H%M%S +0000')
         
-        xml.append(f'  <programme channel="{event["id"]}" start="{start_str}" stop="{end_str}">')
-        xml.append(f'    <title>{_xml_escape(event["title"])}</title>')
-        xml.append(f'    <category>Cricket</category>')
+        xml.append(f'  <programme start="{start_str}" stop="{end_str}" channel="{event["id"]}">')
+        xml.append(f'    <title lang="en">{_xml_escape(event["title"])}</title>')
+        xml.append(f'    <desc lang="en">Watch Live on WebCric</desc>')
+        xml.append(f'    <category lang="en">Cricket</category>')
         xml.append(f'  </programme>')
         
     xml.append('</tv>')
@@ -406,7 +407,7 @@ async def generate_sportsurge_playlist(request: Request):
 async def generate_sportsurge_epg(request: Request):
     events = await get_sportsurge_events()
     streamed_events = await get_all_events()
-    xml = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv>']
+    xml = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv generator-info-name="Streamed.pk Proxy">']
     
     for event in events:
         if not event.get('is_live'):
