@@ -324,9 +324,9 @@ async def generate_crichd_epg(request: Request):
             xml.append(f'    <icon src="{_xml_escape(synced_logo)}" />')
         xml.append(f'  </channel>')
         
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.now(timezone.utc)
         start_str = now.strftime('%Y%m%d%H%M%S +0000')
-        end_str = (now + datetime.timedelta(hours=24)).strftime('%Y%m%d%H%M%S +0000')
+        end_str = (now + timedelta(hours=24)).strftime('%Y%m%d%H%M%S +0000')
         
         xml.append(f'  <programme channel="{event["id"]}" start="{start_str}" stop="{end_str}">')
         xml.append(f'    <title>{_xml_escape(event["title"])}</title>')
