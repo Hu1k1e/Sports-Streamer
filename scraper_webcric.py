@@ -4,13 +4,27 @@ import httpx
 
 
 
+import time
+import asyncio
+
 logger = logging.getLogger(__name__)
+
+_events_cache = {
+    "data": None,
+    "timestamp": 0
+}
+CACHE_TTL = 180  # 3 minutes
 
 async def get_webcric_events():
     """
     Scrapes go.webcric.com for live cricket matches.
+    Only returns streams that are verified to be online.
     Returns a list of dicts: {"id": "url_slug", "title": "Match Title"}
     """
+    if _events_cache["data"] is not None and (time.time() - _events_cache["timestamp"]) < CACHE_TTL:
+        logger.debug("API cache HIT for 'webcric_events' (age %ds)", time.time() - _events_cache["timestamp"])
+        return _events_cache["data"]
+
     events = []
     logger.info("Scraping WebCric for live events...")
     try:
@@ -80,9 +94,26 @@ async def get_webcric_events():
                     seen.add(event["id"])
                     unique_events.append(event)
                     
-            logger.info(f"Found {len(unique_events)} WebCric events")
-            return unique_events
+            logger.info(f"Found {len(unique_events)} WebCric events, verifying live status...")
             
+            # Verify which streams are actually live concurrently
+            tasks = []
+            for event in unique_events:
+                tasks.append(get_webcric_stream(event["id"]))
+                
+            results = await asyncio.gather(*tasks, return_exceptions=True)
+            
+            live_events = []
+            for event, result in zip(unique_events, results):
+                if result is not None and not isinstance(result, Exception):
+                    live_events.append(event)
+            
+            logger.info(f"Verified {len(live_events)} live WebCric events")
+            
+            _events_cache["data"] = live_events
+            _events_cache["timestamp"] = time.time()
+            
+            return live_events
     except Exception as e:
         logger.error(f"Error scraping WebCric events: {e}")
         return []
