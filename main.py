@@ -363,10 +363,14 @@ if __name__ == "__main__":
 
 
 def _sync_poster(sportsurge_title: str, streamed_events: list) -> str | None:
-    best_score = 0.5
+    best_score = 0.85
     best_logo = None
+    best_is_live = False
     
-    s_clean = sportsurge_title.lower().replace(' vs ', ' ').replace('-', ' ')
+    import re
+    # Remove leading channel numbers like "11 " from the title
+    s_clean = re.sub(r'^\d+\s+', '', sportsurge_title.lower())
+    s_clean = s_clean.replace(' vs ', ' ').replace('-', ' ')
     s_words = set(s_clean.split())
     if not s_words:
         return None
@@ -378,9 +382,19 @@ def _sync_poster(sportsurge_title: str, streamed_events: list) -> str | None:
             continue
             
         overlap = len(s_words & e_words) / max(1, len(s_words | e_words))
-        if overlap > best_score:
+        
+        # If one title is entirely contained in the other, treat as a very strong match
+        if s_words.issubset(e_words) or e_words.issubset(s_words):
+            overlap = max(overlap, 0.9)
+            
+        is_live = event.get('is_live', False)
+        
+        # Prioritize live games. If a game is live, we give it a slight edge
+        # so an active game's poster overwrites an expired game's poster.
+        if overlap > best_score or (overlap >= best_score and is_live and not best_is_live):
             best_score = overlap
             best_logo = event.get('logo_url')
+            best_is_live = is_live
             
     return best_logo
 

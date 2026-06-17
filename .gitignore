@@ -6,3 +6,9 @@ project_specs.md
 test.ts
 test_api.py
 matches.json
+scratch/
+*.html
+*.png
+*.js
+test_*.py
+test_*.ts
