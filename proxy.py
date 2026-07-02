@@ -50,8 +50,44 @@ def rewrite_m3u8(content: str, base_url: str, proxy_base_url: str) -> str:
     This is used both for captured content and freshly fetched content.
     """
     lines = content.split('\n')
-    rewritten_lines = []
     
+    # Check if it's a master playlist
+    is_master = any(line.startswith('#EXT-X-STREAM-INF:') for line in lines)
+    
+    if is_master:
+        variants = []
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if line.startswith('#EXT-X-STREAM-INF:'):
+                url_line = lines[i+1].strip() if i+1 < len(lines) else ""
+                bw_match = re.search(r'BANDWIDTH=(\d+)', line)
+                bw = int(bw_match.group(1)) if bw_match else 0
+                variants.append({"bw": bw, "inf": line, "url": url_line})
+                
+        best_variant = max(variants, key=lambda v: v["bw"]) if variants else None
+        
+        new_lines = []
+        all_variant_urls = {v["url"] for v in variants}
+        
+        for line in lines:
+            line = line.strip()
+            if not line or line.startswith('#EXT-X-STREAM-INF:') or line in all_variant_urls:
+                continue
+            new_lines.append(line)
+            
+        if best_variant:
+            inf = best_variant["inf"]
+            if 'CODECS=' not in inf:
+                inf += ',CODECS="avc1.640028,mp4a.40.2"'
+            new_lines.append(inf)
+            absolute_url = urllib.parse.urljoin(base_url, best_variant["url"])
+            b64_url = base64.urlsafe_b64encode(absolute_url.encode('utf-8')).decode('utf-8')
+            new_lines.append(f"{proxy_base_url}/proxy/m3u8/{b64_url}.m3u8")
+            
+        logger.info("M3U8 master rewritten: forced highest bandwidth variant")
+        return "\n".join(new_lines)
+
+    rewritten_lines = []
     is_stream_inf = False
     
     for line in lines:
