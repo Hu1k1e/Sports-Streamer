@@ -7,7 +7,7 @@ from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 from config import STREAMED_PK_URL, DEFAULT_HEADERS, DEBUG_LOGGING
 
-playwright_lock = asyncio.Lock()
+playwright_semaphore = asyncio.Semaphore(3)
 
 logger = logging.getLogger("scraper")
 if DEBUG_LOGGING:
@@ -326,7 +326,7 @@ async def get_stream_url(match_id: str):
         return {"url": None, "headers": {}, "content": None}
 
     # Step 2: Use Playwright just to evaluate the embed page and capture m3u8
-    async with playwright_lock:
+    async with playwright_semaphore:
         async with Stealth().use_async(async_playwright()) as p:
             browser = await p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
             context = await browser.new_context(user_agent=DEFAULT_HEADERS["User-Agent"])

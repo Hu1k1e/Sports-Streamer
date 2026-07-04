@@ -223,7 +223,7 @@ async def stream_event(event_path: str, request: Request):
         stream_headers_cache["latest"] = cached["headers"]
         
         proxy_base_url = str(request.base_url).rstrip('/')
-        m3u8_content = await proxy_m3u8(cached["url"], cached["headers"], proxy_base_url)
+        m3u8_content = await proxy_m3u8(cached["url"], cached["headers"], proxy_base_url, stream_id=event_path)
         if m3u8_content:
             return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
         else:
@@ -254,10 +254,10 @@ async def stream_event(event_path: str, request: Request):
     proxy_base_url = str(request.base_url).rstrip('/')
     if captured_content:
         logger.info("GET: using captured m3u8 content (%d bytes)", len(captured_content))
-        m3u8_content = rewrite_m3u8(captured_content, url, proxy_base_url)
+        m3u8_content = rewrite_m3u8(captured_content, url, proxy_base_url, stream_id=event_path)
     else:
         logger.info("GET: no captured content, fetching via proxy")
-        m3u8_content = await proxy_m3u8(url, headers, proxy_base_url)
+        m3u8_content = await proxy_m3u8(url, headers, proxy_base_url, stream_id=event_path)
     
     if not m3u8_content:
         logger.error("GET: proxy_m3u8 returned empty content for %s", url[:120])
@@ -270,19 +270,21 @@ async def stream_event(event_path: str, request: Request):
 async def handle_proxy_m3u8(b64_url: str, request: Request):
     b64_url += "=" * ((4 - len(b64_url) % 4) % 4)
     url = base64.urlsafe_b64decode(b64_url).decode('utf-8')
-    headers = stream_headers_cache.get("latest", {})
+    stream_id = request.query_params.get("sid", "")
+    headers = stream_headers_cache.get(stream_id, stream_headers_cache.get("latest", {}))
     proxy_base_url = str(request.base_url).rstrip('/')
-    m3u8_content = await proxy_m3u8(url, headers, proxy_base_url)
+    m3u8_content = await proxy_m3u8(url, headers, proxy_base_url, stream_id=stream_id)
     return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
 
 
 @app.api_route("/proxy/media/{filename}", methods=["GET", "HEAD"])
-async def handle_proxy_media(filename: str):
+async def handle_proxy_media(filename: str, request: Request):
     is_ts = filename.endswith(".ts")
     b64_url = filename.rsplit('.', 1)[0]
     b64_url += "=" * ((4 - len(b64_url) % 4) % 4)
     url = base64.urlsafe_b64decode(b64_url).decode('utf-8')
-    headers = stream_headers_cache.get("latest", {})
+    stream_id = request.query_params.get("sid", "")
+    headers = stream_headers_cache.get(stream_id, stream_headers_cache.get("latest", {}))
     media_type = "video/MP2T" if is_ts else "application/octet-stream"
     return await proxy_media(url, headers, media_type)
 
@@ -348,9 +350,11 @@ async def webcric_stream_proxy(match_id: str, request: Request):
         
     proxy_base_url = str(request.base_url).rstrip('/')
     headers = m3u8_data["headers"]
+    stream_id = f"webcric-{match_id}"
+    stream_headers_cache[stream_id] = headers
     stream_headers_cache["latest"] = headers
     
-    m3u8_content = await proxy_m3u8(m3u8_data["url"], headers, proxy_base_url)
+    m3u8_content = await proxy_m3u8(m3u8_data["url"], headers, proxy_base_url, stream_id=stream_id)
     if m3u8_content:
         return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
     return Response(content="Failed to proxy webcric m3u8", status_code=500)
@@ -472,7 +476,7 @@ async def stream_sportsurge_event(request: Request, event_id: str):
     stream_headers_cache["latest"] = headers
     
     proxy_base_url = str(request.base_url).rstrip('/')
-    m3u8_content = await proxy_m3u8(url, headers, proxy_base_url)
+    m3u8_content = await proxy_m3u8(url, headers, proxy_base_url, stream_id=f"sportsurge-{event_id}")
     
     if m3u8_content:
         return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
