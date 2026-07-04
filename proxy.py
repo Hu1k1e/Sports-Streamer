@@ -3,8 +3,7 @@ import base64
 import urllib.parse
 import asyncio
 from curl_cffi.requests import AsyncSession
-from fastapi.responses import StreamingResponse, Response
-from playwright.async_api import async_playwright
+from fastapi.responses import Response
 from config import PROXY_HOST
 
 logger = logging.getLogger("proxy")
@@ -14,6 +13,20 @@ _SKIP_HEADERS = {
     "host", "connection", "accept-encoding", "content-length",
     "transfer-encoding", "keep-alive", "upgrade",
 }
+
+
+# Shared HTTP session for all proxy requests (lazy-initialized).
+# Reusing a single session avoids per-request overhead and lets curl_cffi
+# pool connections to frequently-hit CDN hosts.
+_shared_session: AsyncSession | None = None
+
+
+async def _get_session() -> AsyncSession:
+    """Return the shared AsyncSession, creating it on first use."""
+    global _shared_session
+    if _shared_session is None:
+        _shared_session = AsyncSession(impersonate="chrome")
+    return _shared_session
 
 
 def _build_proxy_headers(captured_headers: dict) -> dict:
@@ -138,8 +151,8 @@ async def proxy_m3u8(url: str, headers: dict, proxy_base_url: str, stream_id: st
         proxy_headers = _build_proxy_headers(headers)
         logger.debug("Proxy headers: %s", {k: v[:60] if isinstance(v, str) else v for k, v in proxy_headers.items()})
         
-        async with AsyncSession(impersonate="chrome") as session:
-            response = await session.get(url, headers=proxy_headers, timeout=10)
+        session = await _get_session()
+        response = await session.get(url, headers=proxy_headers, timeout=10)
         
         logger.info("M3U8 fetch: %d (url: %s)", response.status_code, url[:100])
         
@@ -156,56 +169,39 @@ async def proxy_m3u8(url: str, headers: dict, proxy_base_url: str, stream_id: st
 
 async def proxy_media(url: str, headers: dict, media_type: str = "video/MP2T"):
     """
-    Fetches a video segment or encryption key using curl_cffi (Chrome TLS impersonation)
-    and streams it to Jellyfin.
+    Fetches a video segment or encryption key using curl_cffi (Chrome TLS
+    impersonation) and returns the full buffered content with an explicit
+    Content-Length header.
+
+    Buffering the full segment (typically 500KB-2MB) instead of streaming
+    it through an async generator avoids the EOF errors that occur when
+    FFmpeg aggressively reuses HTTP connections (Keep-Alive) faster than
+    Python's async pipeline can handle.
     """
-    session = AsyncSession(impersonate="chrome")
     try:
         proxy_headers = _build_proxy_headers(headers)
-        # timeout=None allows streaming indefinitely without killing connection midway
-        response = await session.get(url, headers=proxy_headers, stream=True, timeout=None)
-        
+        session = await _get_session()
+        response = await session.get(url, headers=proxy_headers, timeout=30)
+
         if response.status_code != 200:
             logger.error("Media fetch failed: %d for %s", response.status_code, url[:100])
-            await session.close()
             return Response(content=b"", media_type=media_type, status_code=502)
-            
-        # Get the async generator for chunks
-        content_iter = response.aiter_content()
-        
-        # Read the first chunk to inspect for PNG steganography
-        try:
-            first_chunk = await content_iter.__anext__()
-        except StopAsyncIteration:
-            first_chunk = b""
-            
-        stripped_bytes = 0
-        if first_chunk.startswith(b'\x89PNG\r\n\x1a\n'):
-            iend_idx = first_chunk.find(b'IEND')
-            if iend_idx != -1:
-                # Strip PNG header completely
-                png_header_len = iend_idx + 8
-                first_chunk = first_chunk[png_header_len:]
-                stripped_bytes = png_header_len
-        
-        forward_headers = {}
-        # Do NOT forward Content-Length because ASGI handles Transfer-Encoding: chunked automatically.
-        # If we manually set Content-Length and it's slightly off or the stream drops, clients like FFmpeg will fail with EOF.
-        async def stream_generator():
-            try:
-                if first_chunk:
-                    yield first_chunk
-                async for chunk in content_iter:
-                    yield chunk
-            finally:
-                await session.close()
 
-        return StreamingResponse(
-            stream_generator(),
+        body = response.content
+
+        # Strip PNG steganography wrapper if present (anti-piracy measure
+        # where CDNs wrap .ts segments inside a minimal PNG file)
+        if body.startswith(b'\x89PNG\r\n\x1a\n'):
+            iend_idx = body.find(b'IEND')
+            if iend_idx != -1:
+                png_header_len = iend_idx + 8
+                body = body[png_header_len:]
+
+        return Response(
+            content=body,
             media_type=media_type,
-            headers=forward_headers
+            headers={"Content-Length": str(len(body))},
         )
     except Exception as e:
         logger.error("Media stream error: %s", e)
-        await session.close()
         return Response(content=b"", media_type=media_type, status_code=502)

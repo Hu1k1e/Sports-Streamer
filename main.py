@@ -220,7 +220,6 @@ async def stream_event(event_path: str, request: Request):
     if cached and cached["url"]:
         logger.info("GET: serving from cache: %s", cached["url"][:120])
         stream_headers_cache[event_path] = cached["headers"]
-        stream_headers_cache["latest"] = cached["headers"]
         
         proxy_base_url = str(request.base_url).rstrip('/')
         m3u8_content = await proxy_m3u8(cached["url"], cached["headers"], proxy_base_url, stream_id=event_path)
@@ -248,7 +247,6 @@ async def stream_event(event_path: str, request: Request):
     
     # Store headers for segment proxying (per-stream + latest fallback)
     stream_headers_cache[event_path] = headers
-    stream_headers_cache["latest"] = headers
     
     # Use captured content if available (avoids refetch + TLS fingerprint issues)
     proxy_base_url = str(request.base_url).rstrip('/')
@@ -271,7 +269,10 @@ async def handle_proxy_m3u8(b64_url: str, request: Request):
     b64_url += "=" * ((4 - len(b64_url) % 4) % 4)
     url = base64.urlsafe_b64decode(b64_url).decode('utf-8')
     stream_id = request.query_params.get("sid", "")
-    headers = stream_headers_cache.get(stream_id, stream_headers_cache.get("latest", {}))
+    headers = stream_headers_cache.get(stream_id)
+    if not headers:
+        logger.warning("No cached headers for stream '%s' — session may have expired", stream_id)
+        return Response(content="Stream session expired", status_code=502)
     proxy_base_url = str(request.base_url).rstrip('/')
     m3u8_content = await proxy_m3u8(url, headers, proxy_base_url, stream_id=stream_id)
     return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
@@ -284,7 +285,10 @@ async def handle_proxy_media(filename: str, request: Request):
     b64_url += "=" * ((4 - len(b64_url) % 4) % 4)
     url = base64.urlsafe_b64decode(b64_url).decode('utf-8')
     stream_id = request.query_params.get("sid", "")
-    headers = stream_headers_cache.get(stream_id, stream_headers_cache.get("latest", {}))
+    headers = stream_headers_cache.get(stream_id)
+    if not headers:
+        logger.warning("No cached headers for stream '%s' — session may have expired", stream_id)
+        return Response(content=b"", status_code=502)
     media_type = "video/MP2T" if is_ts else "application/octet-stream"
     return await proxy_media(url, headers, media_type)
 
@@ -352,7 +356,6 @@ async def webcric_stream_proxy(match_id: str, request: Request):
     headers = m3u8_data["headers"]
     stream_id = f"webcric-{match_id}"
     stream_headers_cache[stream_id] = headers
-    stream_headers_cache["latest"] = headers
     
     m3u8_content = await proxy_m3u8(m3u8_data["url"], headers, proxy_base_url, stream_id=stream_id)
     if m3u8_content:
@@ -473,7 +476,6 @@ async def stream_sportsurge_event(request: Request, event_id: str):
     
     # Store headers for segment proxying
     stream_headers_cache[f"sportsurge-{event_id}"] = headers
-    stream_headers_cache["latest"] = headers
     
     proxy_base_url = str(request.base_url).rstrip('/')
     m3u8_content = await proxy_m3u8(url, headers, proxy_base_url, stream_id=f"sportsurge-{event_id}")
