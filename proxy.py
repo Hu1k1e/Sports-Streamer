@@ -185,7 +185,7 @@ async def proxy_media(url: str, headers: dict, media_type: str = "video/MP2T"):
 
         if response.status_code != 200:
             logger.error("Media fetch failed: %d for %s", response.status_code, url[:100])
-            return Response(content=b"", media_type=media_type, status_code=502)
+            return Response(content=b"", media_type=media_type, status_code=502, headers={"Connection": "close"})
 
         body = response.content
 
@@ -200,8 +200,8 @@ async def proxy_media(url: str, headers: dict, media_type: str = "video/MP2T"):
         return Response(
             content=body,
             media_type=media_type,
-            headers={"Content-Length": str(len(body))},
+            headers={"Content-Length": str(len(body)), "Connection": "close"},
         )
     except Exception as e:
         logger.error("Media stream error: %s", e)
-        return Response(content=b"", media_type=media_type, status_code=502)
+        return Response(content=b"", media_type=media_type, status_code=502, headers={"Connection": "close"})

@@ -206,12 +206,12 @@ async def stream_event(event_path: str, request: Request):
         cached = _get_cached_stream(event_path)
         if cached and cached["url"]:
             logger.info("HEAD: cache hit, returning 200")
-            return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl"})
+            return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl", "Connection": "close"})
         
         # No cache — return 200 optimistically (Jellyfin expects quick HEAD responses;
         # doing a full Playwright scrape here would time out the probe)
         logger.info("HEAD: no cache, returning 200 optimistically")
-        return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl"})
+        return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl", "Connection": "close"})
     
     # --- GET request: actually resolve and proxy the stream ---
     
@@ -224,7 +224,7 @@ async def stream_event(event_path: str, request: Request):
         proxy_base_url = str(request.base_url).rstrip('/')
         m3u8_content = await proxy_m3u8(cached["url"], cached["headers"], proxy_base_url, stream_id=event_path)
         if m3u8_content:
-            return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
+            return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers={"Connection": "close"})
         else:
             logger.warning("GET: cached URL returned empty m3u8, invalidating cache")
             stream_cache.pop(event_path, None)
@@ -235,7 +235,7 @@ async def stream_event(event_path: str, request: Request):
     
     if not stream_data or not stream_data.get("url"):
         logger.error("GET: scraper returned no m3u8 URL for '%s'", event_path)
-        return Response(content="Stream not found or offline", status_code=404)
+        return Response(content="Stream not found or offline", status_code=404, headers={"Connection": "close"})
     
     url = stream_data["url"]
     headers = stream_data["headers"]
@@ -259,9 +259,9 @@ async def stream_event(event_path: str, request: Request):
     
     if not m3u8_content:
         logger.error("GET: proxy_m3u8 returned empty content for %s", url[:120])
-        return Response(content="Failed to fetch stream playlist", status_code=502)
+        return Response(content="Failed to fetch stream playlist", status_code=502, headers={"Connection": "close"})
     
-    return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
+    return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers={"Connection": "close"})
 
 
 @app.api_route("/proxy/m3u8/{b64_url}.m3u8", methods=["GET", "HEAD"])
@@ -272,10 +272,10 @@ async def handle_proxy_m3u8(b64_url: str, request: Request):
     headers = stream_headers_cache.get(stream_id)
     if not headers:
         logger.warning("No cached headers for stream '%s' — session may have expired", stream_id)
-        return Response(content="Stream session expired", status_code=502)
+        return Response(content="Stream session expired", status_code=502, headers={"Connection": "close"})
     proxy_base_url = str(request.base_url).rstrip('/')
     m3u8_content = await proxy_m3u8(url, headers, proxy_base_url, stream_id=stream_id)
-    return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
+    return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers={"Connection": "close"})
 
 
 @app.api_route("/proxy/media/{filename}", methods=["GET", "HEAD"])
@@ -288,7 +288,7 @@ async def handle_proxy_media(filename: str, request: Request):
     headers = stream_headers_cache.get(stream_id)
     if not headers:
         logger.warning("No cached headers for stream '%s' — session may have expired", stream_id)
-        return Response(content=b"", status_code=502)
+        return Response(content=b"", status_code=502, headers={"Connection": "close"})
     media_type = "video/MP2T" if is_ts else "application/octet-stream"
     return await proxy_media(url, headers, media_type)
 
@@ -346,11 +346,11 @@ async def webcric_stream_proxy(match_id: str, request: Request):
     and injects proxy paths for segment URLs.
     """
     if request.method == "HEAD":
-        return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl"})
+        return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl", "Connection": "close"})
         
     m3u8_data = await get_webcric_stream(match_id)
     if not m3u8_data:
-        return Response("Stream not found or could not be decrypted", status_code=404)
+        return Response("Stream not found or could not be decrypted", status_code=404, headers={"Connection": "close"})
         
     proxy_base_url = str(request.base_url).rstrip('/')
     headers = m3u8_data["headers"]
@@ -359,8 +359,8 @@ async def webcric_stream_proxy(match_id: str, request: Request):
     
     m3u8_content = await proxy_m3u8(m3u8_data["url"], headers, proxy_base_url, stream_id=stream_id)
     if m3u8_content:
-        return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
-    return Response(content="Failed to proxy webcric m3u8", status_code=500)
+        return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers={"Connection": "close"})
+    return Response(content="Failed to proxy webcric m3u8", status_code=500, headers={"Connection": "close"})
 
 
 if __name__ == "__main__":
@@ -463,13 +463,13 @@ async def generate_sportsurge_epg(request: Request):
 @app.api_route("/sportsurge/stream/{event_id}", methods=["GET", "HEAD"])
 async def stream_sportsurge_event(request: Request, event_id: str):
     if request.method == "HEAD":
-        return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl"})
+        return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl", "Connection": "close"})
         
     logger.info(f"Sportsurge GET request for {event_id}")
     stream_data = await get_sportsurge_stream(event_id)
     
     if not stream_data or not stream_data.get("url"):
-        return Response(content="Stream not found or offline", status_code=404)
+        return Response(content="Stream not found or offline", status_code=404, headers={"Connection": "close"})
         
     url = stream_data["url"]
     headers = stream_data["headers"]
@@ -481,6 +481,6 @@ async def stream_sportsurge_event(request: Request, event_id: str):
     m3u8_content = await proxy_m3u8(url, headers, proxy_base_url, stream_id=f"sportsurge-{event_id}")
     
     if m3u8_content:
-        return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
-    return Response(content="Failed to proxy sportsurge m3u8", status_code=500)
+        return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers={"Connection": "close"})
+    return Response(content="Failed to proxy sportsurge m3u8", status_code=500, headers={"Connection": "close"})
 
