@@ -2,7 +2,7 @@ import asyncio
 import logging
 import re
 import time
-import httpx
+from curl_cffi.requests import AsyncSession
 from playwright.async_api import async_playwright
 from playwright_stealth import Stealth
 from config import STREAMED_PK_URL, DEFAULT_HEADERS, DEBUG_LOGGING
@@ -67,7 +67,7 @@ async def get_sports() -> dict[str, str]:
         return cached
 
     logger.info("Fetching sports from %s/sports", API_BASE_URL)
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with AsyncSession(impersonate="chrome", timeout=10) as client:
         try:
             response = await client.get(f"{API_BASE_URL}/sports")
             response.raise_for_status()
@@ -94,7 +94,7 @@ async def get_live_events() -> list[dict]:
         return cached
 
     logger.info("Fetching live events from %s/matches/live", API_BASE_URL)
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with AsyncSession(impersonate="chrome", timeout=10) as client:
         try:
             response = await client.get(f"{API_BASE_URL}/matches/live")
             response.raise_for_status()
@@ -112,7 +112,7 @@ async def get_live_events() -> list[dict]:
 # ---------------------------------------------------------------------------
 # All events  (/api/matches/all)  —  used for the EPG schedule
 # ---------------------------------------------------------------------------
-async def _has_any_stream(client: httpx.AsyncClient, event: dict, semaphore: asyncio.Semaphore) -> bool:
+async def _has_any_stream(client: AsyncSession, event: dict, semaphore: asyncio.Semaphore) -> bool:
     """Check if the event has at least one source with actual streams."""
     async with semaphore:
         for src in event.get("sources", []):
@@ -141,7 +141,7 @@ async def get_all_events() -> list[dict]:
         return cached
 
     logger.info("Fetching all events from %s/matches/all-today", API_BASE_URL)
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with AsyncSession(impersonate="chrome", timeout=10) as client:
         try:
             # Fetch both endpoints concurrently so we can tag live status
             response_all, response_live = await asyncio.gather(
@@ -261,7 +261,7 @@ async def _get_embed_urls(match_id: str) -> list[str]:
     sources = match["sources"]
     logger.info("Found %d sources for match %s", len(sources), match_id)
 
-    async with httpx.AsyncClient(timeout=10) as client:
+    async with AsyncSession(impersonate="chrome", timeout=10) as client:
         # Fetch all streams concurrently from all sources
         tasks = []
         for src in sources:
