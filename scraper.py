@@ -67,7 +67,7 @@ async def get_sports() -> dict[str, str]:
         return cached
 
     logger.info("Fetching sports from %s/sports", API_BASE_URL)
-    async with AsyncSession(impersonate="chrome", timeout=10) as client:
+    async with AsyncSession(impersonate="chrome", timeout=30) as client:
         try:
             response = await client.get(f"{API_BASE_URL}/sports")
             response.raise_for_status()
@@ -94,7 +94,7 @@ async def get_live_events() -> list[dict]:
         return cached
 
     logger.info("Fetching live events from %s/matches/live", API_BASE_URL)
-    async with AsyncSession(impersonate="chrome", timeout=10) as client:
+    async with AsyncSession(impersonate="chrome", timeout=30) as client:
         try:
             response = await client.get(f"{API_BASE_URL}/matches/live")
             response.raise_for_status()
@@ -141,7 +141,7 @@ async def get_all_events() -> list[dict]:
         return cached
 
     logger.info("Fetching all events from %s/matches/all-today", API_BASE_URL)
-    async with AsyncSession(impersonate="chrome", timeout=10) as client:
+    async with AsyncSession(impersonate="chrome", timeout=30) as client:
         try:
             # Fetch both endpoints concurrently so we can tag live status
             response_all, response_live = await asyncio.gather(
@@ -261,7 +261,7 @@ async def _get_embed_urls(match_id: str) -> list[str]:
     sources = match["sources"]
     logger.info("Found %d sources for match %s", len(sources), match_id)
 
-    async with AsyncSession(impersonate="chrome", timeout=10) as client:
+    async with AsyncSession(impersonate="chrome", timeout=30) as client:
         # Fetch all streams concurrently from all sources
         tasks = []
         for src in sources:
@@ -366,12 +366,12 @@ async def get_stream_url(match_id: str):
                 page.on("response", on_response)
 
                 try:
-                    # 'domcontentloaded' ensures the core HTML/scripts are loaded before we start the timeout clock
-                    await page.goto(embed_url, wait_until="domcontentloaded", timeout=15000)
+                    # Use 'commit' to skip waiting for the heavy DOM to parse, making it MUCH faster.
+                    await page.goto(embed_url, wait_until="commit", timeout=15000)
                     logger.info("Embed page loaded")
 
-                    # Fast poll for m3u8 network request (checks every 500ms up to 15s max)
-                    for _ in range(30):
+                    # Fast poll for m3u8 network request (checks every 500ms up to 20s max)
+                    for _ in range(40):
                         if m3u8_url:
                             break
                         await page.wait_for_timeout(500)
