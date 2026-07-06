@@ -4,29 +4,32 @@ import re
 import time
 from curl_cffi.requests import AsyncSession
 from playwright.async_api import async_playwright, Browser, Playwright
-from playwright_stealth import stealth_async
+from playwright_stealth import Stealth
 from config import STREAMED_PK_URL, DEFAULT_HEADERS, DEBUG_LOGGING
 
 _playwright_instance: Playwright | None = None
 _playwright_browser: Browser | None = None
+_stealth_context = None
 
 async def init_playwright():
-    global _playwright_instance, _playwright_browser
+    global _playwright_instance, _playwright_browser, _stealth_context
     if _playwright_browser is None:
-        logger.info("Initializing global Playwright browser...")
-        _playwright_instance = await async_playwright().start()
+        logger.info("Initializing global Playwright browser with Stealth...")
+        _stealth_context = Stealth().use_async(async_playwright())
+        _playwright_instance = await _stealth_context.__aenter__()
         _playwright_browser = await _playwright_instance.chromium.launch(
             headless=True, 
             args=["--disable-blink-features=AutomationControlled"]
         )
 
 async def close_playwright():
-    global _playwright_instance, _playwright_browser
+    global _playwright_instance, _playwright_browser, _stealth_context
     if _playwright_browser:
         await _playwright_browser.close()
         _playwright_browser = None
-    if _playwright_instance:
-        await _playwright_instance.stop()
+    if _stealth_context:
+        await _stealth_context.__aexit__(None, None, None)
+        _stealth_context = None
         _playwright_instance = None
 
 playwright_semaphore = asyncio.Semaphore(3)
@@ -387,7 +390,6 @@ async def get_stream_url(match_id: str):
             for embed_url in embed_urls:
                 logger.info("Navigating to embed URL: %s", embed_url)
                 page = await context.new_page()
-                await stealth_async(page)
 
                 m3u8_url = None
                 m3u8_headers = {}
