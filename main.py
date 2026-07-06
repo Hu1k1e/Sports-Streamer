@@ -44,11 +44,11 @@ async def prewarm_popular_streams_task():
     Ensures that when a user clicks play on a popular game, it's an instant Cache HIT.
     """
     logger.info("Starting background pre-warming task...")
+    # Let the server settle before first scrape
+    await asyncio.sleep(10)
+    
     while True:
         try:
-            # Let the server settle before scraping
-            await asyncio.sleep(10)
-            
             logger.info("[Pre-warm] Fetching live events for pre-warming...")
             events = await get_live_events()
             
@@ -76,11 +76,13 @@ async def prewarm_popular_streams_task():
                 # Small delay to prevent spiking CPU and triggering anti-bot
                 await asyncio.sleep(2)
                 
-        except Exception as e:
-            logger.error("[Pre-warm] Error in background task: %s", e)
+            # Success: Wait 90 seconds before next full cycle (ensures cache stays fresh since TTL is 120s)
+            await asyncio.sleep(90)
             
-        # Re-run every 90 seconds (ensures cache stays fresh since TTL is 120s)
-        await asyncio.sleep(90)
+        except Exception as e:
+            logger.error("[Pre-warm] Error in background task: %s. Retrying in 5 seconds...", e)
+            # Failure: Wait 5 seconds and retry the loop immediately
+            await asyncio.sleep(5)
 
 
 def _evict_expired_streams():
