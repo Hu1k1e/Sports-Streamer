@@ -8,7 +8,7 @@ PROXY_HOST = os.getenv("PROXY_HOST", "http://127.0.0.1:7694")
 
 # Stream cache TTL in seconds — prevents repeated Playwright scrapes
 # when Jellyfin retries GET requests rapidly
-STREAM_CACHE_TTL = int(os.getenv("STREAM_CACHE_TTL", "120"))
+STREAM_CACHE_TTL = int(os.getenv("STREAM_CACHE_TTL", "900"))
 
 # Default programme block length (hours) for EPG entries where
 # we don't know the exact end time

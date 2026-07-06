@@ -35,8 +35,14 @@ stream_headers_cache: dict[str, dict] = {}
 
 @app.on_event("startup")
 async def startup_event():
+    from scraper import init_playwright
+    await init_playwright()
     asyncio.create_task(prewarm_popular_streams_task())
 
+@app.on_event("shutdown")
+async def shutdown_event():
+    from scraper import close_playwright
+    await close_playwright()
 
 async def prewarm_popular_streams_task():
     """
@@ -52,8 +58,8 @@ async def prewarm_popular_streams_task():
             logger.info("[Pre-warm] Fetching live events for pre-warming...")
             events = await get_live_events()
             
-            # Grab the top 10 streams
-            top_events = events[:10]
+            # Grab the top 5 streams
+            top_events = events[:5]
             if top_events:
                 logger.info("[Pre-warm] Found %d events, pre-warming top %d...", len(events), len(top_events))
             
@@ -76,8 +82,8 @@ async def prewarm_popular_streams_task():
                 # Small delay to prevent spiking CPU and triggering anti-bot
                 await asyncio.sleep(2)
                 
-            # Success: Wait 90 seconds before next full cycle (ensures cache stays fresh since TTL is 120s)
-            await asyncio.sleep(90)
+            # Success: Wait 600 seconds before next full cycle (10 mins)
+            await asyncio.sleep(600)
             
         except Exception as e:
             logger.error("[Pre-warm] Error in background task: %s. Retrying in 5 seconds...", e)

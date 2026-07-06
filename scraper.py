@@ -3,9 +3,31 @@ import logging
 import re
 import time
 from curl_cffi.requests import AsyncSession
-from playwright.async_api import async_playwright
-from playwright_stealth import Stealth
+from playwright.async_api import async_playwright, Browser, Playwright
+from playwright_stealth import stealth_async
 from config import STREAMED_PK_URL, DEFAULT_HEADERS, DEBUG_LOGGING
+
+_playwright_instance: Playwright | None = None
+_playwright_browser: Browser | None = None
+
+async def init_playwright():
+    global _playwright_instance, _playwright_browser
+    if _playwright_browser is None:
+        logger.info("Initializing global Playwright browser...")
+        _playwright_instance = await async_playwright().start()
+        _playwright_browser = await _playwright_instance.chromium.launch(
+            headless=True, 
+            args=["--disable-blink-features=AutomationControlled"]
+        )
+
+async def close_playwright():
+    global _playwright_instance, _playwright_browser
+    if _playwright_browser:
+        await _playwright_browser.close()
+        _playwright_browser = None
+    if _playwright_instance:
+        await _playwright_instance.stop()
+        _playwright_instance = None
 
 playwright_semaphore = asyncio.Semaphore(3)
 
@@ -354,14 +376,18 @@ async def get_stream_url(match_id: str):
         return {"url": None, "headers": {}, "content": None}
 
     # Step 2: Use Playwright just to evaluate the embed page and capture m3u8
+    global _playwright_browser
+    if not _playwright_browser:
+        await init_playwright()
+
     async with playwright_semaphore:
-        async with Stealth().use_async(async_playwright()) as p:
-            browser = await p.chromium.launch(headless=True, args=["--disable-blink-features=AutomationControlled"])
-            context = await browser.new_context(user_agent=DEFAULT_HEADERS["User-Agent"])
+        context = await _playwright_browser.new_context(user_agent=DEFAULT_HEADERS["User-Agent"])
+        try:
             
             for embed_url in embed_urls:
                 logger.info("Navigating to embed URL: %s", embed_url)
                 page = await context.new_page()
+                await stealth_async(page)
 
                 m3u8_url = None
                 m3u8_headers = {}
@@ -427,7 +453,6 @@ async def get_stream_url(match_id: str):
 
                         logger.info("=== get_stream_url END (SUCCESS) ===")
                         await page.close()
-                        await browser.close()
                         return {"url": m3u8_url, "headers": m3u8_headers, "content": m3u8_content}
 
                     logger.warning("Failed to capture m3u8 on %s. Trying next embed URL...", embed_url)
@@ -435,9 +460,8 @@ async def get_stream_url(match_id: str):
                     logger.error("Error evaluating embed URL %s: %s", embed_url, e)
                 finally:
                     await page.close()
-                    
-            # If we exhausted all embed URLs
-            await browser.close()
+        finally:
+            await context.close()
             
     logger.warning("=== get_stream_url END (FAILED ALL SOURCES) ===")
     return {"url": None, "headers": {}, "content": None}
