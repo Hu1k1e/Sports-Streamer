@@ -339,6 +339,15 @@ async def get_stream_url(match_id: str):
                 m3u8_headers = {}
                 m3u8_content = None
 
+                # Block unneeded resources to speed up page load
+                async def intercept_route(route):
+                    if route.request.resource_type in ["image", "stylesheet", "font"]:
+                        await route.abort()
+                    else:
+                        await route.continue_()
+                
+                await page.route("**/*", intercept_route)
+
                 async def on_response(response):
                     nonlocal m3u8_url, m3u8_headers, m3u8_content
                     req_url = response.url
@@ -357,14 +366,15 @@ async def get_stream_url(match_id: str):
                 page.on("response", on_response)
 
                 try:
-                    await page.goto(embed_url, wait_until="domcontentloaded", timeout=20000)
+                    # Use commit instead of domcontentloaded to avoid waiting for heavy DOM
+                    await page.goto(embed_url, wait_until="commit", timeout=15000)
                     logger.info("Embed page loaded")
 
-                    # Wait for m3u8 network request
-                    for _ in range(15):
+                    # Fast poll for m3u8 network request (checks every 500ms up to 10s max)
+                    for _ in range(20):
                         if m3u8_url:
                             break
-                        await page.wait_for_timeout(1000)
+                        await page.wait_for_timeout(500)
 
                     # If not yet captured, try clicking video/player elements
                     if not m3u8_url:

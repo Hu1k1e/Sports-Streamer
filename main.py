@@ -33,6 +33,56 @@ MAX_STREAM_CACHE_SIZE = 50  # hard cap to prevent unbounded growth
 stream_headers_cache: dict[str, dict] = {}
 
 
+@app.on_event("startup")
+async def startup_event():
+    asyncio.create_task(prewarm_popular_streams_task())
+
+
+async def prewarm_popular_streams_task():
+    """
+    Background task that periodically scrapes the top 10 live streams.
+    Ensures that when a user clicks play on a popular game, it's an instant Cache HIT.
+    """
+    logger.info("Starting background pre-warming task...")
+    while True:
+        try:
+            # Let the server settle before scraping
+            await asyncio.sleep(10)
+            
+            logger.info("[Pre-warm] Fetching live events for pre-warming...")
+            events = await get_live_events()
+            
+            # Grab the top 10 streams
+            top_events = events[:10]
+            if top_events:
+                logger.info("[Pre-warm] Found %d events, pre-warming top %d...", len(events), len(top_events))
+            
+            for event in top_events:
+                event_path = event["id"]
+                
+                # Check if it's already properly cached and fresh
+                cached = _get_cached_stream(event_path)
+                if not cached:
+                    logger.info("[Pre-warm] Pre-warming stream '%s'...", event_path)
+                    stream_data = await get_stream_url(event_path)
+                    
+                    if stream_data and stream_data.get("url"):
+                        _set_cached_stream(event_path, stream_data["url"], stream_data["headers"])
+                        stream_headers_cache[event_path] = stream_data["headers"]
+                        logger.info("[Pre-warm] Successfully pre-warmed '%s'", event_path)
+                    else:
+                        logger.warning("[Pre-warm] Failed to pre-warm '%s'", event_path)
+                
+                # Small delay to prevent spiking CPU and triggering anti-bot
+                await asyncio.sleep(2)
+                
+        except Exception as e:
+            logger.error("[Pre-warm] Error in background task: %s", e)
+            
+        # Re-run every 90 seconds (ensures cache stays fresh since TTL is 120s)
+        await asyncio.sleep(90)
+
+
 def _evict_expired_streams():
     """Remove all expired entries from the stream cache."""
     now = time.time()
