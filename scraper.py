@@ -24,6 +24,13 @@ API_BASE_URL = f"{STREAMED_PK_URL}/api"
 _cache: dict[str, dict] = {}
 _CACHE_TTL = 300  # 5 minutes in seconds
 
+_shared_api_session: AsyncSession | None = None
+
+def _get_api_session() -> AsyncSession:
+    global _shared_api_session
+    if _shared_api_session is None:
+        _shared_api_session = AsyncSession(impersonate="chrome", timeout=30)
+    return _shared_api_session
 
 def _evict_expired():
     """Remove all expired entries from the API cache."""
@@ -67,18 +74,24 @@ async def get_sports() -> dict[str, str]:
         return cached
 
     logger.info("Fetching sports from %s/sports", API_BASE_URL)
-    async with AsyncSession(impersonate="chrome", timeout=30) as client:
+    client = _get_api_session()
+    for attempt in range(3):
         try:
             response = await client.get(f"{API_BASE_URL}/sports")
             response.raise_for_status()
             data = response.json()
-            _sports_map = {s["id"]: s["name"] for s in data}
-            logger.info("Loaded %d sport categories", len(_sports_map))
+            
+            for sport in data:
+                _sports_map[sport["id"]] = sport["name"]
+            
             _set_cached("sports", _sports_map)
             return _sports_map
         except Exception as e:
-            logger.error("Error fetching sports: %s", e, exc_info=True)
-            return _sports_map  # return stale data if available
+            if attempt == 2:
+                logger.error("Error fetching sports: %s", e, exc_info=True)
+                return _sports_map  # return stale data if available
+            await asyncio.sleep(1)
+    return _sports_map
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +107,8 @@ async def get_live_events() -> list[dict]:
         return cached
 
     logger.info("Fetching live events from %s/matches/live", API_BASE_URL)
-    async with AsyncSession(impersonate="chrome", timeout=30) as client:
+    client = _get_api_session()
+    for attempt in range(3):
         try:
             response = await client.get(f"{API_BASE_URL}/matches/live")
             response.raise_for_status()
@@ -105,8 +119,11 @@ async def get_live_events() -> list[dict]:
             _set_cached("live_events", events)
             return events
         except Exception as e:
-            logger.error("Error fetching live events: %s", e, exc_info=True)
-            return []
+            if attempt == 2:
+                logger.error("Error fetching live events: %s", e, exc_info=True)
+                return []
+            await asyncio.sleep(1)
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -139,22 +156,30 @@ async def get_all_events() -> list[dict]:
     cached = _get_cached("all_events")
     if cached is not None:
         return cached
-
+    
     logger.info("Fetching all events from %s/matches/all-today", API_BASE_URL)
-    async with AsyncSession(impersonate="chrome", timeout=30) as client:
+    client = _get_api_session()
+    for attempt in range(3):
         try:
             # Fetch both endpoints concurrently so we can tag live status
             response_all, response_live = await asyncio.gather(
                 client.get(f"{API_BASE_URL}/matches/all-today"),
-                client.get(f"{API_BASE_URL}/matches/live")
+                client.get(f"{API_BASE_URL}/matches/live"),
+                return_exceptions=True
             )
+            
+            if isinstance(response_all, Exception):
+                raise response_all
+            if isinstance(response_live, Exception):
+                raise response_live
+
             response_all.raise_for_status()
             response_live.raise_for_status()
-
+            
             all_data = response_all.json()
             live_data = response_live.json()
-            live_ids = {item["id"] for item in live_data}
-
+            
+            live_ids = {m["id"] for m in live_data}
             events = _parse_events(all_data, live_ids=live_ids)
             
             # Filter out events that have no actual streams available, UNLESS they are live
@@ -175,8 +200,11 @@ async def get_all_events() -> list[dict]:
             _set_cached("all_events", valid_events)
             return valid_events
         except Exception as e:
-            logger.error("Error fetching all events: %s", e, exc_info=True)
-            return []
+            if attempt == 2:
+                logger.error("Error fetching all events: %s", e, exc_info=True)
+                return []
+            await asyncio.sleep(1)
+    return []
 
 
 # ---------------------------------------------------------------------------
@@ -240,6 +268,17 @@ PREFERRED_SOURCES = [
 ]
 
 
+async def _fetch_stream_from_source(client: AsyncSession, source_name: str, source_id: str) -> list:
+    """Helper to fetch streams for a specific source."""
+    try:
+        resp = await client.get(f"{API_BASE_URL}/stream/{source_name}/{source_id}")
+        if resp.status_code == 200:
+            return resp.json()
+    except Exception:
+        pass
+    return []
+
+
 async def _get_embed_urls(match_id: str) -> list[str]:
     """
     Get the embed URLs for a match using its sources via the Stream API.
@@ -261,53 +300,42 @@ async def _get_embed_urls(match_id: str) -> list[str]:
     sources = match["sources"]
     logger.info("Found %d sources for match %s", len(sources), match_id)
 
-    async with AsyncSession(impersonate="chrome", timeout=30) as client:
-        # Fetch all streams concurrently from all sources
-        tasks = []
-        for src in sources:
-            src_name = src["source"]
-            src_id = src["id"]
-            tasks.append(client.get(f"{API_BASE_URL}/stream/{src_name}/{src_id}"))
-        
-        responses = await asyncio.gather(*tasks, return_exceptions=True)
-        
-        all_streams = []
-        for response in responses:
-            if isinstance(response, Exception):
-                continue
-            if response.status_code == 200:
-                try:
-                    streams = response.json()
-                    all_streams.extend(streams)
-                except Exception:
-                    pass
+    client = _get_api_session()
+    
+    # Fetch all streams concurrently from all sources
+    tasks = []
+    for src in sources:
+        tasks.append(_fetch_stream_from_source(client, src["source"], src["id"]))
+    
+    results = await asyncio.gather(*tasks)
+    
+    all_streams = []
+    for res in results:
+        if isinstance(res, list):
+            all_streams.extend(res)
+    
+    if not all_streams:
+        logger.error("No streams found across %d sources for match %s", len(sources), match_id)
+        return []
 
-        if not all_streams:
-            logger.error("No streams found across %d sources for match %s", len(sources), match_id)
-            return []
-
-        # Sort all streams by:
-        # 1. Admin source priority
-        # Sort streams according to priority
-        def stream_priority(s):
-            # Prioritize admin streams, then sort by viewers
-            is_admin = s.get('source') == 'admin'
-            return (is_admin, s.get('viewers', 0))
-            
-        all_streams.sort(key=stream_priority, reverse=True)
+    # Sort streams according to priority
+    def stream_priority(s):
+        # Prioritize admin streams, then sort by viewers
+        is_admin = s.get('source') == 'admin'
+        return (is_admin, s.get('viewers', 0))
         
-        urls = []
-        for s in all_streams:
-            u = s.get("embedUrl")
-            if u and u not in urls:
-                urls.append(u)
-                logger.info("Found candidate stream from %s (viewers=%s, HD=%s, lang=%s): %s",
-                            s.get("source"), s.get("viewers"), s.get("hd"),
-                            s.get("language"), u)
-                            
-        return urls
-
-    return []
+    all_streams.sort(key=stream_priority, reverse=True)
+    
+    urls = []
+    for s in all_streams:
+        u = s.get("embedUrl")
+        if u and u not in urls:
+            urls.append(u)
+            logger.info("Found candidate stream from %s (viewers=%s, HD=%s, lang=%s): %s",
+                        s.get("source"), s.get("viewers"), s.get("hd"),
+                        s.get("language"), u)
+                        
+    return urls
 
 
 async def get_stream_url(match_id: str):
