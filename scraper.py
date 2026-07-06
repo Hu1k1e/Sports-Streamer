@@ -366,12 +366,12 @@ async def get_stream_url(match_id: str):
                 page.on("response", on_response)
 
                 try:
-                    # Use commit instead of domcontentloaded to avoid waiting for heavy DOM
-                    await page.goto(embed_url, wait_until="commit", timeout=15000)
+                    # 'domcontentloaded' ensures the core HTML/scripts are loaded before we start the timeout clock
+                    await page.goto(embed_url, wait_until="domcontentloaded", timeout=15000)
                     logger.info("Embed page loaded")
 
-                    # Fast poll for m3u8 network request (checks every 500ms up to 10s max)
-                    for _ in range(20):
+                    # Fast poll for m3u8 network request (checks every 500ms up to 15s max)
+                    for _ in range(30):
                         if m3u8_url:
                             break
                         await page.wait_for_timeout(500)
