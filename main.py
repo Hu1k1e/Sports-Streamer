@@ -156,6 +156,9 @@ async def generate_playlist(request: Request):
     
     base_url = str(request.base_url).rstrip('/')
     
+    # Sort events by sport category then name for organized channel lists
+    events.sort(key=lambda e: (sports.get(e.get('category', 'other'), e.get('category', 'other').capitalize()), e.get('name', '')))
+    
     m3u = ["#EXTM3U"]
     for event in events:
         name = event["name"]
@@ -186,6 +189,9 @@ async def generate_epg():
     events = await get_all_events()
     sports = await get_sports()
     
+    # Sort events by sport category then name for organized channel lists
+    events.sort(key=lambda e: (sports.get(e.get('category', 'other'), e.get('category', 'other').capitalize()), e.get('name', '')))
+    
     xml = ['<?xml version="1.0" encoding="UTF-8"?>']
     xml.append('<tv generator-info-name="Streamed.pk Proxy">')
     
@@ -211,6 +217,11 @@ async def generate_epg():
         group_title = sports.get(category_id, category_id.capitalize())
         safe_name = _xml_escape(name)
         is_live = event.get("is_live", False)
+        
+        # Use the best available image for this programme's icon.
+        # Prefer the poster (combined team image), then home badge, then away badge.
+        # This ensures each programme has a UNIQUE icon in the "On Now" section.
+        programme_icon = event.get("logo_url", "")
         
         # Event date is UNIX timestamp in ms
         timestamp_ms = event.get("date", 0)
@@ -238,8 +249,8 @@ async def generate_epg():
         xml.append(f'  <programme start="{start_str}" stop="{end_str}" channel="{match_id}">')
         xml.append(f'    <title lang="en">{safe_name}</title>')
         xml.append(f'    <desc lang="en">Live {group_title} stream for {safe_name}</desc>')
-        if logo:
-            xml.append(f'    <icon src="{_xml_escape(logo)}" />')
+        if programme_icon:
+            xml.append(f'    <icon src="{_xml_escape(programme_icon)}" />')
         xml.append(f'    <category lang="en">{_xml_escape(group_title)}</category>')
         xml.append(f'  </programme>')
         

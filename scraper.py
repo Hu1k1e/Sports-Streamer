@@ -257,15 +257,25 @@ def _parse_events(data: list, is_live: bool = False, live_ids: set = None) -> li
         teams = item.get("teams")
 
         # Build image URL for the event
+        # Fallback chain: poster → home badge → away badge
         logo_url = ""
+        home_badge_url = ""
+        away_badge_url = ""
+        if teams:
+            home_badge = (teams.get("home") or {}).get("badge", "")
+            away_badge = (teams.get("away") or {}).get("badge", "")
+            if home_badge:
+                home_badge_url = f"{STREAMED_PK_URL}/api/images/badge/{home_badge}.webp"
+            if away_badge:
+                away_badge_url = f"{STREAMED_PK_URL}/api/images/badge/{away_badge}.webp"
+
         if poster:
             # poster field is already a path like "/api/images/proxy/..."
             logo_url = f"{STREAMED_PK_URL}{poster}"
-        elif teams:
-            # Try home team badge
-            home_badge = (teams.get("home") or {}).get("badge", "")
-            if home_badge:
-                logo_url = f"{STREAMED_PK_URL}/api/images/badge/{home_badge}.webp"
+        elif home_badge_url:
+            logo_url = home_badge_url
+        elif away_badge_url:
+            logo_url = away_badge_url
 
         events.append({
             "id": event_id,
@@ -274,6 +284,8 @@ def _parse_events(data: list, is_live: bool = False, live_ids: set = None) -> li
             "date": item.get("date", 0),
             "poster": poster,
             "logo_url": logo_url,
+            "home_badge_url": home_badge_url,
+            "away_badge_url": away_badge_url,
             "sources": item["sources"],
             "is_live": is_live or (live_ids is not None and event_id in live_ids),
             "teams": teams,
