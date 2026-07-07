@@ -197,6 +197,8 @@ async def generate_playlist(request: Request):
         # Use the display name from /api/sports, fallback to capitalized id
         group_title = sports.get(category_id, category_id.capitalize())
         logo = event.get("logo_url", "")
+        if logo:
+            logo += "?v=2"  # cache buster for Jellyfin
         
         m3u.append(
             f'#EXTINF:-1 tvg-id="{match_id}" tvg-name="{name}"'
@@ -231,6 +233,8 @@ async def generate_epg():
         name = event["name"]
         safe_name = _xml_escape(name)
         logo = event.get("logo_url", "")
+        if logo:
+            logo += "?v=2"  # cache buster for Jellyfin
         
         xml.append(f'  <channel id="{match_id}">')
         xml.append(f'    <display-name>{safe_name}</display-name>')
@@ -252,6 +256,8 @@ async def generate_epg():
         # Prefer the poster (combined team image), then home badge, then away badge.
         # This ensures each programme has a UNIQUE icon in the "On Now" section.
         programme_icon = event.get("logo_url", "")
+        if programme_icon:
+            programme_icon += "?v=2"  # cache buster for Jellyfin
         
         # Event date is UNIX timestamp in ms
         timestamp_ms = event.get("date", 0)

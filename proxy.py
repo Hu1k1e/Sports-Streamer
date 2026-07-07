@@ -146,25 +146,35 @@ async def proxy_m3u8(url: str, headers: dict, proxy_base_url: str, stream_id: st
     """
     Fetches the M3U8 playlist using curl_cffi (Chrome TLS impersonation)
     and rewrites URLs so Jellyfin requests segments through our proxy.
+    Includes retry logic to handle temporary CDN timeouts.
     """
-    try:
-        proxy_headers = _build_proxy_headers(headers)
-        logger.debug("Proxy headers: %s", {k: v[:60] if isinstance(v, str) else v for k, v in proxy_headers.items()})
-        
-        session = await _get_session()
-        response = await session.get(url, headers=proxy_headers, timeout=10)
-        
-        logger.info("M3U8 fetch: %d (url: %s)", response.status_code, url[:100])
-        
-        if response.status_code != 200:
-            logger.error("M3U8 fetch failed: %d — %s", response.status_code, response.text[:200])
-            return ""
-        
-        return rewrite_m3u8(response.text, str(response.url), proxy_base_url, stream_id=stream_id)
-        
-    except Exception as e:
-        logger.error("Proxy M3U8 error: %s", e, exc_info=True)
-        return ""
+    proxy_headers = _build_proxy_headers(headers)
+    logger.debug("Proxy headers: %s", {k: v[:60] if isinstance(v, str) else v for k, v in proxy_headers.items()})
+    
+    session = await _get_session()
+    
+    for attempt in range(3):
+        try:
+            response = await session.get(url, headers=proxy_headers, timeout=15)
+            
+            if response.status_code != 200:
+                logger.error("M3U8 fetch failed (attempt %d/3): %d — %s", attempt + 1, response.status_code, response.text[:200])
+                if attempt < 2:
+                    await asyncio.sleep(1)
+                    continue
+                return ""
+            
+            logger.info("M3U8 fetch: %d (url: %s)", response.status_code, url[:100])
+            return rewrite_m3u8(response.text, str(response.url), proxy_base_url, stream_id=stream_id)
+            
+        except Exception as e:
+            logger.error("Proxy M3U8 error (attempt %d/3): %s", attempt + 1, e)
+            if attempt < 2:
+                await asyncio.sleep(1)
+            else:
+                logger.error("Proxy M3U8 final failure", exc_info=True)
+                
+    return ""
 
 
 async def proxy_media(url: str, headers: dict, media_type: str = "video/MP2T"):
@@ -172,36 +182,43 @@ async def proxy_media(url: str, headers: dict, media_type: str = "video/MP2T"):
     Fetches a video segment or encryption key using curl_cffi (Chrome TLS
     impersonation) and returns the full buffered content with an explicit
     Content-Length header.
-
-    Buffering the full segment (typically 500KB-2MB) instead of streaming
-    it through an async generator avoids the EOF errors that occur when
-    FFmpeg aggressively reuses HTTP connections (Keep-Alive) faster than
-    Python's async pipeline can handle.
+    Includes retry logic to handle temporary CDN timeouts.
     """
-    try:
-        proxy_headers = _build_proxy_headers(headers)
-        session = await _get_session()
-        response = await session.get(url, headers=proxy_headers, timeout=30)
+    proxy_headers = _build_proxy_headers(headers)
+    session = await _get_session()
+    
+    for attempt in range(3):
+        try:
+            response = await session.get(url, headers=proxy_headers, timeout=30)
 
-        if response.status_code != 200:
-            logger.error("Media fetch failed: %d for %s", response.status_code, url[:100])
-            return Response(content=b"", media_type=media_type, status_code=502, headers={"Connection": "close"})
+            if response.status_code != 200:
+                logger.error("Media fetch failed (attempt %d/3): %d for %s", attempt + 1, response.status_code, url[:100])
+                if attempt < 2:
+                    await asyncio.sleep(1)
+                    continue
+                return Response(content=b"", media_type=media_type, status_code=502, headers={"Connection": "close"})
 
-        body = response.content
+            body = response.content
 
-        # Strip PNG steganography wrapper if present (anti-piracy measure
-        # where CDNs wrap .ts segments inside a minimal PNG file)
-        if body.startswith(b'\x89PNG\r\n\x1a\n'):
-            iend_idx = body.find(b'IEND')
-            if iend_idx != -1:
-                png_header_len = iend_idx + 8
-                body = body[png_header_len:]
+            # Strip PNG steganography wrapper if present (anti-piracy measure
+            # where CDNs wrap .ts segments inside a minimal PNG file)
+            if body.startswith(b'\x89PNG\r\n\x1a\n'):
+                iend_idx = body.find(b'IEND')
+                if iend_idx != -1:
+                    png_header_len = iend_idx + 8
+                    body = body[png_header_len:]
 
-        return Response(
-            content=body,
-            media_type=media_type,
-            headers={"Content-Length": str(len(body)), "Connection": "close"},
-        )
-    except Exception as e:
-        logger.error("Media stream error: %s", e)
-        return Response(content=b"", media_type=media_type, status_code=502, headers={"Connection": "close"})
+            return Response(
+                content=body,
+                media_type=media_type,
+                headers={"Content-Length": str(len(body)), "Connection": "close"},
+            )
+            
+        except Exception as e:
+            logger.error("Media stream error (attempt %d/3): %s", attempt + 1, e)
+            if attempt < 2:
+                await asyncio.sleep(1)
+            else:
+                logger.error("Media stream final failure for %s", url[:100])
+                
+    return Response(content=b"", media_type=media_type, status_code=502, headers={"Connection": "close"})
