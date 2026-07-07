@@ -192,7 +192,10 @@ async def generate_playlist(request: Request):
     m3u = ["#EXTM3U"]
     for event in events:
         name = event["name"]
-        match_id = event["id"]
+        original_id = event["id"]
+        # Append -v2 to the ID so Jellyfin treats this as a brand new channel
+        # and ignores its stubborn internal image cache.
+        match_id = original_id + "-v2"
         category_id = event.get("category", "other")
         # Use the display name from /api/sports, fallback to capitalized id
         group_title = sports.get(category_id, category_id.capitalize())
@@ -204,7 +207,7 @@ async def generate_playlist(request: Request):
             f'#EXTINF:-1 tvg-id="{match_id}" tvg-name="{name}"'
             f' tvg-logo="{logo}" group-title="{group_title}",{name}'
         )
-        stream_url = f"{base_url}/stream/{match_id}"
+        stream_url = f"{base_url}/stream/{original_id}"
         m3u.append(stream_url)
     
     logger.info("Generated M3U playlist with %d live channels", len(events))
@@ -229,7 +232,8 @@ async def generate_epg():
     
     # 1. Channels
     for event in events:
-        match_id = event["id"]
+        # Append -v2 to force Jellyfin to create a new channel and fetch new logos
+        match_id = event["id"] + "-v2"
         name = event["name"]
         safe_name = _xml_escape(name)
         logo = event.get("logo_url", "")
@@ -245,7 +249,7 @@ async def generate_epg():
     # 2. Programmes
     now = datetime.now(timezone.utc)
     for event in events:
-        match_id = event["id"]
+        match_id = event["id"] + "-v2"
         name = event["name"]
         category_id = event.get("category", "other")
         group_title = sports.get(category_id, category_id.capitalize())
