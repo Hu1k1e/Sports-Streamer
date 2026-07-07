@@ -237,8 +237,8 @@ async def get_all_events() -> list[dict]:
 # ---------------------------------------------------------------------------
 
 def _parse_events(data: list, is_live: bool = False, live_ids: set = None) -> list[dict]:
-    """Parse raw API match data into our internal event dicts."""
-    events = []
+    """Parse raw API match data into our internal event dicts and deduplicate by title."""
+    events_dict = {}
     
     for item in data:
         if not item.get("sources"):
@@ -252,7 +252,6 @@ def _parse_events(data: list, is_live: bool = False, live_ids: set = None) -> li
         # Remove leading 4-digit year like "2026 " from the title
         clean_title = re.sub(r'^\d{4}\s+', '', raw_title)
 
-        event_id = item["id"]
         poster = item.get("poster", "")
         teams = item.get("teams")
 
@@ -277,21 +276,32 @@ def _parse_events(data: list, is_live: bool = False, live_ids: set = None) -> li
         elif away_badge_url:
             logo_url = away_badge_url
 
-        events.append({
+        new_event = {
             "id": event_id,
             "name": clean_title,
             "category": item.get("category", "other"),
-            "date": item.get("date", 0),
+            "date": event_date,
             "poster": poster,
             "logo_url": logo_url,
             "home_badge_url": home_badge_url,
             "away_badge_url": away_badge_url,
             "sources": item["sources"],
-            "is_live": is_live or (live_ids is not None and event_id in live_ids),
+            "is_live": event_is_live,
             "teams": teams,
-        })
+        }
+        
+        # Deduplicate: if we already have this event name, prefer the live one.
+        # If neither or both are live, prefer the one that happens sooner.
+        existing = events_dict.get(clean_title)
+        if existing:
+            if new_event["is_live"] and not existing["is_live"]:
+                events_dict[clean_title] = new_event
+            elif (new_event["is_live"] == existing["is_live"]) and new_event["date"] > 0 and (existing["date"] == 0 or new_event["date"] < existing["date"]):
+                events_dict[clean_title] = new_event
+        else:
+            events_dict[clean_title] = new_event
 
-    return events
+    return list(events_dict.values())
 
 
 # ---------------------------------------------------------------------------
