@@ -29,8 +29,12 @@ stream_cache: dict[str, dict] = {}
 MAX_STREAM_CACHE_SIZE = 50  # hard cap to prevent unbounded growth
 
 # Per-stream header cache for segment proxying.
-# Also stores a "latest" key as fallback.
+# Stored as { stream_id: {"headers": ..., "last_access": ...} }
+# Has its OWN TTL (6 hours) independent of stream_cache, so headers survive
+# long after the stream URL cache expires. Actively-used streams refresh
+# their timestamp on every segment/playlist fetch.
 stream_headers_cache: dict[str, dict] = {}
+_HEADERS_CACHE_TTL = 6 * 3600  # 6 hours — covers any live sports event
 
 
 @app.on_event("startup")
@@ -74,7 +78,7 @@ async def prewarm_popular_streams_task():
                     
                     if stream_data and stream_data.get("url"):
                         _set_cached_stream(event_path, stream_data["url"], stream_data["headers"])
-                        stream_headers_cache[event_path] = stream_data["headers"]
+                        _set_stream_headers(event_path, stream_data["headers"])
                         logger.info("[Pre-warm] Successfully pre-warmed '%s'", event_path)
                     else:
                         logger.warning("[Pre-warm] Failed to pre-warm '%s'", event_path)
@@ -90,16 +94,24 @@ async def prewarm_popular_streams_task():
             # Failure: Wait 5 seconds and retry the loop immediately
             await asyncio.sleep(5)
 
-
 def _evict_expired_streams():
     """Remove all expired entries from the stream cache."""
     now = time.time()
     expired = [k for k, v in stream_cache.items() if (now - v["timestamp"]) >= STREAM_CACHE_TTL]
     for k in expired:
         stream_cache.pop(k, None)
-        stream_headers_cache.pop(k, None)
+        # DO NOT evict stream_headers_cache here — it has its own TTL.
+        # Evicting headers kills active playback sessions.
     if expired:
         logger.debug("Evicted %d expired stream cache entries", len(expired))
+
+    # Separately evict truly stale headers (no access in 6 hours)
+    stale_headers = [k for k, v in stream_headers_cache.items()
+                     if (now - v.get("last_access", 0)) >= _HEADERS_CACHE_TTL]
+    for k in stale_headers:
+        stream_headers_cache.pop(k, None)
+    if stale_headers:
+        logger.debug("Evicted %d stale header cache entries", len(stale_headers))
 
 
 def _get_cached_stream(event_path: str):
@@ -121,13 +133,31 @@ def _set_cached_stream(event_path: str, url: str, headers: dict):
         oldest_key = min(stream_cache, key=lambda k: stream_cache[k]["timestamp"])
         logger.debug("Stream cache full (%d), evicting oldest: %s", len(stream_cache), oldest_key)
         stream_cache.pop(oldest_key, None)
-        stream_headers_cache.pop(oldest_key, None)
     stream_cache[event_path] = {
         "url": url,
         "headers": headers,
         "timestamp": time.time()
     }
     logger.debug("Cached stream for '%s' (TTL: %ds, total: %d)", event_path, STREAM_CACHE_TTL, len(stream_cache))
+
+
+def _get_stream_headers(stream_id: str) -> dict | None:
+    """Get cached headers for a stream, refreshing the access timestamp.
+    Returns the headers dict or None if not found."""
+    entry = stream_headers_cache.get(stream_id)
+    if entry:
+        entry["last_access"] = time.time()
+        return entry["headers"]
+    return None
+
+
+def _set_stream_headers(stream_id: str, headers: dict):
+    """Store headers for a stream with a fresh access timestamp."""
+    stream_headers_cache[stream_id] = {
+        "headers": headers,
+        "last_access": time.time()
+    }
+
 
 
 def _xml_escape(text: str) -> str:
@@ -288,7 +318,7 @@ async def stream_event(event_path: str, request: Request):
     cached = _get_cached_stream(event_path)
     if cached and cached["url"]:
         logger.info("GET: serving from cache: %s", cached["url"][:120])
-        stream_headers_cache[event_path] = cached["headers"]
+        _set_stream_headers(event_path, cached["headers"])
         
         proxy_base_url = str(request.base_url).rstrip('/')
         m3u8_content = await proxy_m3u8(cached["url"], cached["headers"], proxy_base_url, stream_id=event_path)
@@ -314,8 +344,8 @@ async def stream_event(event_path: str, request: Request):
     # Cache the result
     _set_cached_stream(event_path, url, headers)
     
-    # Store headers for segment proxying (per-stream + latest fallback)
-    stream_headers_cache[event_path] = headers
+    # Store headers for segment proxying
+    _set_stream_headers(event_path, headers)
     
     # Use captured content if available (avoids refetch + TLS fingerprint issues)
     proxy_base_url = str(request.base_url).rstrip('/')
@@ -338,7 +368,7 @@ async def handle_proxy_m3u8(b64_url: str, request: Request):
     b64_url += "=" * ((4 - len(b64_url) % 4) % 4)
     url = base64.urlsafe_b64decode(b64_url).decode('utf-8')
     stream_id = request.query_params.get("sid", "")
-    headers = stream_headers_cache.get(stream_id)
+    headers = _get_stream_headers(stream_id)
     if not headers:
         logger.warning("No cached headers for stream '%s' — session may have expired", stream_id)
         return Response(content="Stream session expired", status_code=502, headers={"Connection": "close"})
@@ -354,7 +384,7 @@ async def handle_proxy_media(filename: str, request: Request):
     b64_url += "=" * ((4 - len(b64_url) % 4) % 4)
     url = base64.urlsafe_b64decode(b64_url).decode('utf-8')
     stream_id = request.query_params.get("sid", "")
-    headers = stream_headers_cache.get(stream_id)
+    headers = _get_stream_headers(stream_id)
     if not headers:
         logger.warning("No cached headers for stream '%s' — session may have expired", stream_id)
         return Response(content=b"", status_code=502, headers={"Connection": "close"})
@@ -424,7 +454,7 @@ async def webcric_stream_proxy(match_id: str, request: Request):
     proxy_base_url = str(request.base_url).rstrip('/')
     headers = m3u8_data["headers"]
     stream_id = f"webcric-{match_id}"
-    stream_headers_cache[stream_id] = headers
+    _set_stream_headers(stream_id, headers)
     
     m3u8_content = await proxy_m3u8(m3u8_data["url"], headers, proxy_base_url, stream_id=stream_id)
     if m3u8_content:
@@ -544,7 +574,7 @@ async def stream_sportsurge_event(request: Request, event_id: str):
     headers = stream_data["headers"]
     
     # Store headers for segment proxying
-    stream_headers_cache[f"sportsurge-{event_id}"] = headers
+    _set_stream_headers(f"sportsurge-{event_id}", headers)
     
     proxy_base_url = str(request.base_url).rstrip('/')
     m3u8_content = await proxy_m3u8(url, headers, proxy_base_url, stream_id=f"sportsurge-{event_id}")
