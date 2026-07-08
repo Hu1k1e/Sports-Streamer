@@ -176,7 +176,7 @@ def read_root():
     return {"status": "ok", "message": "Streamed.pk IPTV Proxy is running. Use /playlist.m3u for Jellyfin."}
 
 
-@app.get("/proxy/image/{match_id}")
+@app.get("/proxy/image/{match_id}.jpg")
 async def proxy_image(match_id: str):
     """
     Proxy the event logo to prevent Jellyfin SQLite URL truncation and
@@ -235,7 +235,7 @@ async def generate_playlist(request: Request):
         group_title = sports.get(category_id, category_id.capitalize())
         logo = event.get("logo_url", "")
         if logo:
-            logo = f"{base_url}/proxy/image/{match_id}?v=4"  # proxied, short URL
+            logo = f"{base_url}/proxy/image/{match_id}.jpg?v=5"  # proxied, short URL with extension
         
         m3u.append(
             f'#EXTINF:-1 tvg-id="{match_id}" tvg-name="{name}"'
@@ -251,7 +251,7 @@ async def generate_playlist(request: Request):
 
 
 @app.get("/epg.xml")
-async def generate_epg():
+async def generate_epg(request: Request):
     """
     Generate XMLTV EPG guide.
     Uses /api/matches/all for the full schedule.
@@ -281,7 +281,7 @@ async def generate_epg():
         safe_name = _xml_escape(name)
         logo = event.get("logo_url", "")
         if logo:
-            logo = f"{base_url}/proxy/image/{match_id}?v=4"
+            logo = f"{base_url}/proxy/image/{match_id}.jpg?v=5"
         
         xml.append(f'  <channel id="{match_id}">')
         xml.append(f'    <display-name>{safe_name}</display-name>')
@@ -302,7 +302,7 @@ async def generate_epg():
         # Use the best available image for this programme's icon.
         programme_icon = event.get("logo_url", "")
         if programme_icon:
-            programme_icon = f"{base_url}/proxy/image/{match_id}?v=4"
+            programme_icon = f"{base_url}/proxy/image/{match_id}.jpg?v=5"
         
         # Event date is UNIX timestamp in ms
         timestamp_ms = event.get("date", 0)
