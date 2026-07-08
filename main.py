@@ -186,18 +186,25 @@ async def generate_playlist(request: Request):
     
     base_url = str(request.base_url).rstrip('/')
     
-    # Sort events by sport category then name for organized channel lists
-    events.sort(key=lambda e: (sports.get(e.get('category', 'other'), e.get('category', 'other').capitalize()), e.get('name', '')))
+    # Custom sort: football (soccer) first, then alphabetical by sport, then name
+    def _sort_key(e):
+        cat = e.get('category', 'other')
+        display = sports.get(cat, cat.capitalize())
+        # Football gets sort prefix '0' so it appears first
+        prefix = '0' if cat == 'football' else '1'
+        return (prefix, display, e.get('name', ''))
+    
+    events.sort(key=_sort_key)
+    
+    # Assign channel numbers: football gets 1-N, then other sports follow sequentially
+    # Each sport group is contiguous so Jellyfin groups them together
+    channel_number = 1
     
     m3u = ["#EXTM3U"]
     for event in events:
         name = event["name"]
-        original_id = event["id"]
-        # Append -v2 to the ID so Jellyfin treats this as a brand new channel
-        # and ignores its stubborn internal image cache.
-        match_id = original_id + "-v2"
+        match_id = event["id"]
         category_id = event.get("category", "other")
-        # Use the display name from /api/sports, fallback to capitalized id
         group_title = sports.get(category_id, category_id.capitalize())
         logo = event.get("logo_url", "")
         if logo:
@@ -205,10 +212,12 @@ async def generate_playlist(request: Request):
         
         m3u.append(
             f'#EXTINF:-1 tvg-id="{match_id}" tvg-name="{name}"'
+            f' tvg-chno="{channel_number}"'
             f' tvg-logo="{logo}" group-title="{group_title}",{name}'
         )
-        stream_url = f"{base_url}/stream/{original_id}"
+        stream_url = f"{base_url}/stream/{match_id}"
         m3u.append(stream_url)
+        channel_number += 1
     
     logger.info("Generated M3U playlist with %d live channels", len(events))
     return Response(content="\n".join(m3u), media_type="application/vnd.apple.mpegurl")
@@ -224,16 +233,21 @@ async def generate_epg():
     events = await get_all_events()
     sports = await get_sports()
     
-    # Sort events by sport category then name for organized channel lists
-    events.sort(key=lambda e: (sports.get(e.get('category', 'other'), e.get('category', 'other').capitalize()), e.get('name', '')))
+    # Custom sort: football (soccer) first, then alphabetical by sport, then name
+    def _sort_key(e):
+        cat = e.get('category', 'other')
+        display = sports.get(cat, cat.capitalize())
+        prefix = '0' if cat == 'football' else '1'
+        return (prefix, display, e.get('name', ''))
+    
+    events.sort(key=_sort_key)
     
     xml = ['<?xml version="1.0" encoding="UTF-8"?>']
     xml.append('<tv generator-info-name="Streamed.pk Proxy">')
     
     # 1. Channels
     for event in events:
-        # Append -v2 to force Jellyfin to create a new channel and fetch new logos
-        match_id = event["id"] + "-v2"
+        match_id = event["id"]
         name = event["name"]
         safe_name = _xml_escape(name)
         logo = event.get("logo_url", "")
@@ -249,7 +263,7 @@ async def generate_epg():
     # 2. Programmes
     now = datetime.now(timezone.utc)
     for event in events:
-        match_id = event["id"] + "-v2"
+        match_id = event["id"]
         name = event["name"]
         category_id = event.get("category", "other")
         group_title = sports.get(category_id, category_id.capitalize())
@@ -257,8 +271,6 @@ async def generate_epg():
         is_live = event.get("is_live", False)
         
         # Use the best available image for this programme's icon.
-        # Prefer the poster (combined team image), then home badge, then away badge.
-        # This ensures each programme has a UNIQUE icon in the "On Now" section.
         programme_icon = event.get("logo_url", "")
         if programme_icon:
             programme_icon += "?v=2"  # cache buster for Jellyfin
@@ -273,8 +285,6 @@ async def generate_epg():
             
         # Determine end time
         if is_live and start_dt < now:
-            # Event is currently live — extend end to at least 2h from now
-            # so it stays visible as "On Now" in Jellyfin
             end_dt = max(
                 start_dt + timedelta(hours=EPG_DEFAULT_DURATION_HOURS),
                 now + timedelta(hours=2)
@@ -282,7 +292,6 @@ async def generate_epg():
         else:
             end_dt = start_dt + timedelta(hours=EPG_DEFAULT_DURATION_HOURS)
         
-        # XMLTV date format: YYYYMMDDHHMMSS +0000
         start_str = start_dt.strftime("%Y%m%d%H%M%S +0000")
         end_str = end_dt.strftime("%Y%m%d%H%M%S +0000")
         
@@ -315,12 +324,12 @@ async def stream_event(event_path: str, request: Request):
         cached = _get_cached_stream(event_path)
         if cached and cached["url"]:
             logger.info("HEAD: cache hit, returning 200")
-            return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl", "Connection": "close"})
+            return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl"})
         
         # No cache — return 200 optimistically (Jellyfin expects quick HEAD responses;
         # doing a full Playwright scrape here would time out the probe)
         logger.info("HEAD: no cache, returning 200 optimistically")
-        return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl", "Connection": "close"})
+        return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl"})
     
     # --- GET request: actually resolve and proxy the stream ---
     
@@ -333,7 +342,7 @@ async def stream_event(event_path: str, request: Request):
         proxy_base_url = str(request.base_url).rstrip('/')
         m3u8_content = await proxy_m3u8(cached["url"], cached["headers"], proxy_base_url, stream_id=event_path)
         if m3u8_content:
-            return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers={"Connection": "close"})
+            return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
         else:
             logger.warning("GET: cached URL returned empty m3u8, invalidating cache")
             stream_cache.pop(event_path, None)
@@ -344,7 +353,7 @@ async def stream_event(event_path: str, request: Request):
     
     if not stream_data or not stream_data.get("url"):
         logger.error("GET: scraper returned no m3u8 URL for '%s'", event_path)
-        return Response(content="Stream not found or offline", status_code=404, headers={"Connection": "close"})
+        return Response(content="Stream not found or offline", status_code=404)
     
     url = stream_data["url"]
     headers = stream_data["headers"]
@@ -368,9 +377,9 @@ async def stream_event(event_path: str, request: Request):
     
     if not m3u8_content:
         logger.error("GET: proxy_m3u8 returned empty content for %s", url[:120])
-        return Response(content="Failed to fetch stream playlist", status_code=502, headers={"Connection": "close"})
+        return Response(content="Failed to fetch stream playlist", status_code=502)
     
-    return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers={"Connection": "close"})
+    return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
 
 
 @app.api_route("/proxy/m3u8/{b64_url}.m3u8", methods=["GET", "HEAD"])
@@ -381,10 +390,10 @@ async def handle_proxy_m3u8(b64_url: str, request: Request):
     headers = _get_stream_headers(stream_id)
     if not headers:
         logger.warning("No cached headers for stream '%s' — session may have expired", stream_id)
-        return Response(content="Stream session expired", status_code=502, headers={"Connection": "close"})
+        return Response(content="Stream session expired", status_code=502)
     proxy_base_url = str(request.base_url).rstrip('/')
     m3u8_content = await proxy_m3u8(url, headers, proxy_base_url, stream_id=stream_id)
-    return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers={"Connection": "close"})
+    return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
 
 
 @app.api_route("/proxy/media/{filename}", methods=["GET", "HEAD"])
@@ -397,7 +406,7 @@ async def handle_proxy_media(filename: str, request: Request):
     headers = _get_stream_headers(stream_id)
     if not headers:
         logger.warning("No cached headers for stream '%s' — session may have expired", stream_id)
-        return Response(content=b"", status_code=502, headers={"Connection": "close"})
+        return Response(content=b"", status_code=502)
     media_type = "video/MP2T" if is_ts else "application/octet-stream"
     return await proxy_media(url, headers, media_type)
 
@@ -455,11 +464,11 @@ async def webcric_stream_proxy(match_id: str, request: Request):
     and injects proxy paths for segment URLs.
     """
     if request.method == "HEAD":
-        return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl", "Connection": "close"})
+        return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl"})
         
     m3u8_data = await get_webcric_stream(match_id)
     if not m3u8_data:
-        return Response("Stream not found or could not be decrypted", status_code=404, headers={"Connection": "close"})
+        return Response("Stream not found or could not be decrypted", status_code=404)
         
     proxy_base_url = str(request.base_url).rstrip('/')
     headers = m3u8_data["headers"]
@@ -468,8 +477,8 @@ async def webcric_stream_proxy(match_id: str, request: Request):
     
     m3u8_content = await proxy_m3u8(m3u8_data["url"], headers, proxy_base_url, stream_id=stream_id)
     if m3u8_content:
-        return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers={"Connection": "close"})
-    return Response(content="Failed to proxy webcric m3u8", status_code=500, headers={"Connection": "close"})
+        return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
+    return Response(content="Failed to proxy webcric m3u8", status_code=500)
 
 
 if __name__ == "__main__":
@@ -572,13 +581,13 @@ async def generate_sportsurge_epg(request: Request):
 @app.api_route("/sportsurge/stream/{event_id}", methods=["GET", "HEAD"])
 async def stream_sportsurge_event(request: Request, event_id: str):
     if request.method == "HEAD":
-        return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl", "Connection": "close"})
+        return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl"})
         
     logger.info(f"Sportsurge GET request for {event_id}")
     stream_data = await get_sportsurge_stream(event_id)
     
     if not stream_data or not stream_data.get("url"):
-        return Response(content="Stream not found or offline", status_code=404, headers={"Connection": "close"})
+        return Response(content="Stream not found or offline", status_code=404)
         
     url = stream_data["url"]
     headers = stream_data["headers"]
@@ -590,6 +599,6 @@ async def stream_sportsurge_event(request: Request, event_id: str):
     m3u8_content = await proxy_m3u8(url, headers, proxy_base_url, stream_id=f"sportsurge-{event_id}")
     
     if m3u8_content:
-        return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers={"Connection": "close"})
-    return Response(content="Failed to proxy sportsurge m3u8", status_code=500, headers={"Connection": "close"})
+        return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
+    return Response(content="Failed to proxy sportsurge m3u8", status_code=500)
 

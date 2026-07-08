@@ -1,5 +1,6 @@
 import logging
 import base64
+import time
 import urllib.parse
 import asyncio
 from curl_cffi.requests import AsyncSession
@@ -7,6 +8,15 @@ from fastapi.responses import Response
 from config import PROXY_HOST
 
 logger = logging.getLogger("proxy")
+
+# CORS headers injected on every proxy response so iOS AVPlayer
+# can fetch segments cross-origin without being blocked.
+_CORS_HEADERS = {
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+    "Access-Control-Allow-Headers": "*",
+    "Access-Control-Expose-Headers": "Content-Length, Content-Type",
+}
 
 # Headers that should NOT be forwarded (hop-by-hop or internal)
 _SKIP_HEADERS = {
@@ -18,14 +28,26 @@ _SKIP_HEADERS = {
 # Shared HTTP session for all proxy requests (lazy-initialized).
 # Reusing a single session avoids per-request overhead and lets curl_cffi
 # pool connections to frequently-hit CDN hosts.
+# The session is recycled every 30 minutes to prevent stale connections
+# (CDNs rotate IPs and long-lived sockets go dead silently).
 _shared_session: AsyncSession | None = None
+_session_created_at: float = 0.0
+_SESSION_MAX_AGE = 1800  # 30 minutes
 
 
 async def _get_session() -> AsyncSession:
-    """Return the shared AsyncSession, creating it on first use."""
-    global _shared_session
-    if _shared_session is None:
+    """Return the shared AsyncSession, recycling it if older than 30 minutes."""
+    global _shared_session, _session_created_at
+    now = time.time()
+    if _shared_session is None or (now - _session_created_at) > _SESSION_MAX_AGE:
+        if _shared_session is not None:
+            logger.info("Recycling curl_cffi session (age: %.0fs)", now - _session_created_at)
+            try:
+                _shared_session.close()
+            except Exception:
+                pass
         _shared_session = AsyncSession(impersonate="chrome")
+        _session_created_at = now
     return _shared_session
 
 
@@ -56,6 +78,16 @@ def _build_proxy_headers(captured_headers: dict) -> dict:
 
 
 import re
+
+def _ensure_version_tag(lines: list[str]) -> list[str]:
+    """Ensure #EXT-X-VERSION:3 is present — required by iOS AVPlayer."""
+    has_version = any(l.startswith('#EXT-X-VERSION') for l in lines)
+    if not has_version:
+        # Insert right after #EXTM3U (index 0) if present, else prepend
+        idx = 1 if lines and lines[0].startswith('#EXTM3U') else 0
+        lines.insert(idx, '#EXT-X-VERSION:3')
+    return lines
+
 
 def rewrite_m3u8(content: str, base_url: str, proxy_base_url: str, stream_id: str = "") -> str:
     """
@@ -99,6 +131,7 @@ def rewrite_m3u8(content: str, base_url: str, proxy_base_url: str, stream_id: st
             b64_url = base64.urlsafe_b64encode(absolute_url.encode('utf-8')).decode('utf-8')
             new_lines.append(f"{proxy_base_url}/proxy/m3u8/{b64_url}.m3u8{sid_param}")
             
+        new_lines = _ensure_version_tag(new_lines)
         logger.info("M3U8 master rewritten: forced highest bandwidth variant")
         return "\n".join(new_lines)
 
@@ -138,6 +171,7 @@ def rewrite_m3u8(content: str, base_url: str, proxy_base_url: str, stream_id: st
             else:
                 rewritten_lines.append(f"{proxy_base_url}/proxy/media/{b64_url}.ts{sid_param}")
     
+    rewritten_lines = _ensure_version_tag(rewritten_lines)
     logger.info("M3U8 rewritten: %d lines", len(rewritten_lines))
     return "\n".join(rewritten_lines)
 
@@ -146,21 +180,24 @@ async def proxy_m3u8(url: str, headers: dict, proxy_base_url: str, stream_id: st
     """
     Fetches the M3U8 playlist using curl_cffi (Chrome TLS impersonation)
     and rewrites URLs so Jellyfin requests segments through our proxy.
-    Includes retry logic to handle temporary CDN timeouts.
+    Includes retry logic with exponential backoff.
     """
     proxy_headers = _build_proxy_headers(headers)
+    # Tell CDNs we want an HLS playlist, not HTML
+    proxy_headers["Accept"] = "application/vnd.apple.mpegurl, application/x-mpegURL, */*"
     logger.debug("Proxy headers: %s", {k: v[:60] if isinstance(v, str) else v for k, v in proxy_headers.items()})
     
     session = await _get_session()
+    backoff_delays = [0.5, 1.0, 2.0]  # exponential backoff
     
     for attempt in range(3):
         try:
-            response = await session.get(url, headers=proxy_headers, timeout=15)
+            response = await session.get(url, headers=proxy_headers, timeout=20)
             
             if response.status_code != 200:
                 logger.error("M3U8 fetch failed (attempt %d/3): %d — %s", attempt + 1, response.status_code, response.text[:200])
                 if attempt < 2:
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(backoff_delays[attempt])
                     continue
                 return ""
             
@@ -170,7 +207,7 @@ async def proxy_m3u8(url: str, headers: dict, proxy_base_url: str, stream_id: st
         except Exception as e:
             logger.error("Proxy M3U8 error (attempt %d/3): %s", attempt + 1, e)
             if attempt < 2:
-                await asyncio.sleep(1)
+                await asyncio.sleep(backoff_delays[attempt])
             else:
                 logger.error("Proxy M3U8 final failure", exc_info=True)
                 
@@ -182,10 +219,12 @@ async def proxy_media(url: str, headers: dict, media_type: str = "video/MP2T"):
     Fetches a video segment or encryption key using curl_cffi (Chrome TLS
     impersonation) and returns the full buffered content with an explicit
     Content-Length header.
-    Includes retry logic to handle temporary CDN timeouts.
+    Includes retry logic with exponential backoff.
+    Uses keep-alive (no Connection: close) so iOS can reuse TCP sockets.
     """
     proxy_headers = _build_proxy_headers(headers)
     session = await _get_session()
+    backoff_delays = [0.5, 1.0, 2.0]
     
     for attempt in range(3):
         try:
@@ -194,9 +233,9 @@ async def proxy_media(url: str, headers: dict, media_type: str = "video/MP2T"):
             if response.status_code != 200:
                 logger.error("Media fetch failed (attempt %d/3): %d for %s", attempt + 1, response.status_code, url[:100])
                 if attempt < 2:
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(backoff_delays[attempt])
                     continue
-                return Response(content=b"", media_type=media_type, status_code=502, headers={"Connection": "close"})
+                return Response(content=b"", media_type=media_type, status_code=502, headers=_CORS_HEADERS)
 
             body = response.content
 
@@ -211,14 +250,14 @@ async def proxy_media(url: str, headers: dict, media_type: str = "video/MP2T"):
             return Response(
                 content=body,
                 media_type=media_type,
-                headers={"Content-Length": str(len(body)), "Connection": "close"},
+                headers={"Content-Length": str(len(body)), **_CORS_HEADERS},
             )
             
         except Exception as e:
             logger.error("Media stream error (attempt %d/3): %s", attempt + 1, e)
             if attempt < 2:
-                await asyncio.sleep(1)
+                await asyncio.sleep(backoff_delays[attempt])
             else:
                 logger.error("Media stream final failure for %s", url[:100])
                 
-    return Response(content=b"", media_type=media_type, status_code=502, headers={"Connection": "close"})
+    return Response(content=b"", media_type=media_type, status_code=502, headers=_CORS_HEADERS)
