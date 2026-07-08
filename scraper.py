@@ -256,10 +256,12 @@ def _parse_events(data: list, is_live: bool = False, live_ids: set = None) -> li
         teams = item.get("teams")
 
         # Build image URL for the event
-        # Fallback chain: poster → home badge → away badge
+        # Fallback chain: poster → combined badge poster → home badge → away badge
         logo_url = ""
         home_badge_url = ""
         away_badge_url = ""
+        home_badge = ""
+        away_badge = ""
         if teams:
             home_badge = (teams.get("home") or {}).get("badge", "")
             away_badge = (teams.get("away") or {}).get("badge", "")
@@ -271,6 +273,10 @@ def _parse_events(data: list, is_live: bool = False, live_ids: set = None) -> li
         if poster:
             # poster field is already a path like "/api/images/proxy/..."
             logo_url = f"{STREAMED_PK_URL}{poster}"
+        elif home_badge and away_badge:
+            # Generate a combined poster with both team logos using the
+            # streamed.pk poster API: /api/images/poster/{home}/{away}.webp
+            logo_url = f"{STREAMED_PK_URL}/api/images/poster/{home_badge}/{away_badge}.webp"
         elif home_badge_url:
             logo_url = home_badge_url
         elif away_badge_url:
