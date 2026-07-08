@@ -4,6 +4,7 @@ import base64
 from datetime import datetime, timezone, timedelta
 from fastapi import FastAPI, Response, Request, HTTPException
 from fastapi.responses import PlainTextResponse, RedirectResponse
+import httpx
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 from scraper import get_live_events, get_all_events, get_sports, get_stream_url
@@ -175,6 +176,32 @@ def read_root():
     return {"status": "ok", "message": "Streamed.pk IPTV Proxy is running. Use /playlist.m3u for Jellyfin."}
 
 
+@app.get("/proxy/image/{match_id}")
+async def proxy_image(match_id: str):
+    """
+    Proxy the event logo to prevent Jellyfin SQLite URL truncation and
+    guarantee cache busting with a clean, short URL.
+    """
+    events = await get_all_events()
+    event = next((e for e in events if e["id"] == match_id), None)
+    
+    if not event or not event.get("logo_url"):
+        # Fallback to an empty 1x1 transparent WebP/PNG if not found
+        return Response(status_code=404)
+        
+    logo_url = event["logo_url"]
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            resp = await client.get(logo_url)
+            resp.raise_for_status()
+            content_type = resp.headers.get("content-type", "image/webp")
+            return Response(content=resp.content, media_type=content_type)
+    except Exception as e:
+        logger.error("Failed to proxy image %s: %s", match_id, e)
+        raise HTTPException(status_code=500, detail="Failed to load image")
+
+
+
 @app.get("/playlist.m3u")
 async def generate_playlist(request: Request):
     """
@@ -208,7 +235,7 @@ async def generate_playlist(request: Request):
         group_title = sports.get(category_id, category_id.capitalize())
         logo = event.get("logo_url", "")
         if logo:
-            logo += "?v=3"  # cache buster for Jellyfin
+            logo = f"{base_url}/proxy/image/{match_id}?v=4"  # proxied, short URL
         
         m3u.append(
             f'#EXTINF:-1 tvg-id="{match_id}" tvg-name="{name}"'
@@ -245,6 +272,8 @@ async def generate_epg():
     xml = ['<?xml version="1.0" encoding="UTF-8"?>']
     xml.append('<tv generator-info-name="Streamed.pk Proxy">')
     
+    base_url = str(request.base_url).rstrip('/')
+    
     # 1. Channels
     for event in events:
         match_id = event["id"]
@@ -252,7 +281,7 @@ async def generate_epg():
         safe_name = _xml_escape(name)
         logo = event.get("logo_url", "")
         if logo:
-            logo += "?v=3"  # cache buster for Jellyfin
+            logo = f"{base_url}/proxy/image/{match_id}?v=4"
         
         xml.append(f'  <channel id="{match_id}">')
         xml.append(f'    <display-name>{safe_name}</display-name>')
@@ -273,7 +302,7 @@ async def generate_epg():
         # Use the best available image for this programme's icon.
         programme_icon = event.get("logo_url", "")
         if programme_icon:
-            programme_icon += "?v=3"  # cache buster for Jellyfin
+            programme_icon = f"{base_url}/proxy/image/{match_id}?v=4"
         
         # Event date is UNIX timestamp in ms
         timestamp_ms = event.get("date", 0)
