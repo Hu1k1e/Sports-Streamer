@@ -20,10 +20,19 @@ app = FastAPI(title="Streamed.pk IPTV Proxy")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Headers for all m3u8 playlist responses.
+# - Cache-Control: iOS AVPlayer MUST re-fetch live playlists to discover new segments.
+# - CORS: explicit backup in case CORSMiddleware doesn't fire (no Origin header).
+_M3U8_HEADERS = {
+    "Cache-Control": "no-cache, no-store, must-revalidate",
+    "Access-Control-Allow-Origin": "*",
+    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+}
 
 # In-memory cache: { event_path: {"url": ..., "headers": ..., "timestamp": ...} }
 stream_cache: dict[str, dict] = {}
@@ -371,7 +380,7 @@ async def stream_event(event_path: str, request: Request):
         proxy_base_url = str(request.base_url).rstrip('/')
         m3u8_content = await proxy_m3u8(cached["url"], cached["headers"], proxy_base_url, stream_id=event_path)
         if m3u8_content:
-            return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
+            return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers=_M3U8_HEADERS)
         else:
             logger.warning("GET: cached URL returned empty m3u8, invalidating cache")
             stream_cache.pop(event_path, None)
@@ -408,7 +417,7 @@ async def stream_event(event_path: str, request: Request):
         logger.error("GET: proxy_m3u8 returned empty content for %s", url[:120])
         return Response(content="Failed to fetch stream playlist", status_code=502)
     
-    return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
+    return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers=_M3U8_HEADERS)
 
 
 @app.api_route("/proxy/m3u8/{b64_url}.m3u8", methods=["GET", "HEAD"])
@@ -422,7 +431,7 @@ async def handle_proxy_m3u8(b64_url: str, request: Request):
         return Response(content="Stream session expired", status_code=502)
     proxy_base_url = str(request.base_url).rstrip('/')
     m3u8_content = await proxy_m3u8(url, headers, proxy_base_url, stream_id=stream_id)
-    return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
+    return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers=_M3U8_HEADERS)
 
 
 @app.api_route("/proxy/media/{filename}", methods=["GET", "HEAD"])

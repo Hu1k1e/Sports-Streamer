@@ -32,16 +32,33 @@ _SKIP_HEADERS = {
 # (CDNs rotate IPs and long-lived sockets go dead silently).
 _shared_session: AsyncSession | None = None
 _session_created_at: float = 0.0
+_session_last_activity: float = 0.0
 _SESSION_MAX_AGE = 1800  # 30 minutes
+_SESSION_IDLE_THRESHOLD = 300  # 5 minutes — only recycle if idle this long
 
 
 async def _get_session() -> AsyncSession:
-    """Return the shared AsyncSession, recycling it if older than 30 minutes."""
-    global _shared_session, _session_created_at
+    """Return the shared AsyncSession, recycling only when idle.
+    
+    Active streams continuously update _session_last_activity.
+    We only recycle when BOTH conditions are met:
+      1. Session is older than _SESSION_MAX_AGE (30 min)
+      2. No segment/playlist traffic in the last _SESSION_IDLE_THRESHOLD (5 min)
+    This prevents mid-stream CDN disconnections caused by TLS fingerprint changes.
+    """
+    global _shared_session, _session_created_at, _session_last_activity
     now = time.time()
-    if _shared_session is None or (now - _session_created_at) > _SESSION_MAX_AGE:
+    age = now - _session_created_at
+    idle = now - _session_last_activity
+    
+    needs_recycle = (
+        _shared_session is None
+        or (age > _SESSION_MAX_AGE and idle > _SESSION_IDLE_THRESHOLD)
+    )
+    
+    if needs_recycle:
         if _shared_session is not None:
-            logger.info("Recycling curl_cffi session (age: %.0fs)", now - _session_created_at)
+            logger.info("Recycling curl_cffi session (age: %.0fs, idle: %.0fs)", age, idle)
             try:
                 _shared_session.close()
             except Exception:
@@ -49,6 +66,12 @@ async def _get_session() -> AsyncSession:
         _shared_session = AsyncSession(impersonate="chrome")
         _session_created_at = now
     return _shared_session
+
+
+def _touch_session_activity():
+    """Mark that the session was just used for a segment/playlist fetch."""
+    global _session_last_activity
+    _session_last_activity = time.time()
 
 
 def _build_proxy_headers(captured_headers: dict) -> dict:
@@ -124,8 +147,6 @@ def rewrite_m3u8(content: str, base_url: str, proxy_base_url: str, stream_id: st
             
         if best_variant:
             inf = best_variant["inf"]
-            if 'CODECS=' not in inf:
-                inf += ',CODECS="avc1.640028,mp4a.40.2"'
             new_lines.append(inf)
             absolute_url = urllib.parse.urljoin(base_url, best_variant["url"])
             b64_url = base64.urlsafe_b64encode(absolute_url.encode('utf-8')).decode('utf-8')
@@ -146,8 +167,6 @@ def rewrite_m3u8(content: str, base_url: str, proxy_base_url: str, stream_id: st
         if line.startswith('#'):
             if line.startswith('#EXT-X-STREAM-INF:'):
                 is_stream_inf = True
-                if 'CODECS=' not in line:
-                    line = line + ',CODECS="avc1.640028,mp4a.40.2"'
             elif line.startswith('#EXT-X-KEY:'):
                 # Rewrite URI in EXT-X-KEY to route through proxy
                 match = re.search(r'URI="([^"]+)"', line)
@@ -193,6 +212,7 @@ async def proxy_m3u8(url: str, headers: dict, proxy_base_url: str, stream_id: st
     for attempt in range(3):
         try:
             response = await session.get(url, headers=proxy_headers, timeout=20)
+            _touch_session_activity()
             
             if response.status_code != 200:
                 logger.error("M3U8 fetch failed (attempt %d/3): %d — %s", attempt + 1, response.status_code, response.text[:200])
@@ -229,6 +249,7 @@ async def proxy_media(url: str, headers: dict, media_type: str = "video/MP2T"):
     for attempt in range(3):
         try:
             response = await session.get(url, headers=proxy_headers, timeout=30)
+            _touch_session_activity()
 
             if response.status_code != 200:
                 logger.error("Media fetch failed (attempt %d/3): %d for %s", attempt + 1, response.status_code, url[:100])
