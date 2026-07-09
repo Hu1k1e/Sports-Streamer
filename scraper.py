@@ -391,13 +391,29 @@ async def _get_embed_urls(match_id: str) -> list[str]:
     urls = []
     for s in all_streams:
         u = s.get("embedUrl")
-        if u and u not in urls:
-            urls.append(u)
+        source = s.get("source")
+        if u and not any(d["url"] == u for d in urls):
+            urls.append({"url": u, "source": source})
             logger.info("Found candidate stream from %s (viewers=%s, HD=%s, lang=%s): %s",
-                        s.get("source"), s.get("viewers"), s.get("hd"),
+                        source, s.get("viewers"), s.get("hd"),
                         s.get("language"), u)
                         
     return urls
+
+async def check_better_source_available(match_id: str, cached_source: str) -> bool:
+    """
+    Quickly checks the REST API to see if a higher-priority source (like 'admin')
+    has come online while we are stuck on a lower-priority cached source.
+    Returns True if we should invalidate the cache.
+    """
+    if cached_source == 'admin':
+        return False
+        
+    embeds = await _get_embed_urls(match_id)
+    if embeds and embeds[0]["source"] == "admin" and cached_source != "admin":
+        return True
+    return False
+
 
 
 async def get_stream_url(match_id: str):
@@ -413,7 +429,7 @@ async def get_stream_url(match_id: str):
     embed_urls = await _get_embed_urls(match_id)
     if not embed_urls:
         logger.error("Could not resolve any embed URL for match %s", match_id)
-        return {"url": None, "headers": {}, "content": None}
+        return {"url": None, "headers": {}, "content": None, "source": None}
 
     # Step 2: Use Playwright just to evaluate the embed page and capture m3u8
     global _playwright_browser
@@ -424,8 +440,10 @@ async def get_stream_url(match_id: str):
         context = await _playwright_browser.new_context(user_agent=DEFAULT_HEADERS["User-Agent"])
         try:
             
-            for embed_url in embed_urls:
-                logger.info("Navigating to embed URL: %s", embed_url)
+            for embed_dict in embed_urls:
+                embed_url = embed_dict["url"]
+                embed_source = embed_dict["source"]
+                logger.info("Navigating to embed URL: %s (Source: %s)", embed_url, embed_source)
                 page = await context.new_page()
 
                 m3u8_url = None
@@ -490,17 +508,16 @@ async def get_stream_url(match_id: str):
                         if cookie_str:
                             m3u8_headers["Cookie"] = cookie_str
 
-                        logger.info("=== get_stream_url END (SUCCESS) ===")
-                        await page.close()
-                        return {"url": m3u8_url, "headers": m3u8_headers, "content": m3u8_content}
-
-                    logger.warning("Failed to capture m3u8 on %s. Trying next embed URL...", embed_url)
+                        logger.info("=== get_stream_url SUCCESS ===")
+                        return {"url": m3u8_url, "headers": m3u8_headers, "content": m3u8_content, "source": embed_source}
+                    else:
+                        logger.warning("Failed to extract m3u8 from %s", embed_url)
                 except Exception as e:
-                    logger.error("Error evaluating embed URL %s: %s", embed_url, e)
+                    logger.error("Playwright error during get_stream_url: %s", e)
                 finally:
                     await page.close()
         finally:
             await context.close()
             
-    logger.warning("=== get_stream_url END (FAILED ALL SOURCES) ===")
-    return {"url": None, "headers": {}, "content": None}
+    logger.warning("=== get_stream_url FAILED ===")
+    return {"url": None, "headers": {}, "content": None, "source": None}

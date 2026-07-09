@@ -87,7 +87,7 @@ async def prewarm_popular_streams_task():
                     stream_data = await get_stream_url(event_path)
                     
                     if stream_data and stream_data.get("url"):
-                        _set_cached_stream(event_path, stream_data["url"], stream_data["headers"])
+                        _set_cached_stream(event_path, stream_data["url"], stream_data["headers"], stream_data.get("source"))
                         _set_stream_headers(event_path, stream_data["headers"])
                         logger.info("[Pre-warm] Successfully pre-warmed '%s'", event_path)
                     else:
@@ -130,23 +130,24 @@ def _get_cached_stream(event_path: str):
     entry = stream_cache.get(event_path)
     if entry and (time.time() - entry["timestamp"]) < STREAM_CACHE_TTL:
         logger.debug("Cache HIT for '%s' (age: %.0fs)", event_path, time.time() - entry["timestamp"])
-        return {"url": entry["url"], "headers": entry["headers"]}
+        return {"url": entry["url"], "headers": entry["headers"], "source": entry.get("source")}
     # Entry missing or expired (already cleaned by evict)
     return None
 
 
-def _set_cached_stream(event_path: str, url: str, headers: dict):
+def _set_cached_stream(event_path: str, url: str, headers: dict, source: str = None):
     """Cache a successful stream result. Evicts old entries if over capacity."""
     _evict_expired_streams()
     # If at capacity, drop the oldest entry
-    while len(stream_cache) >= MAX_STREAM_CACHE_SIZE:
-        oldest_key = min(stream_cache, key=lambda k: stream_cache[k]["timestamp"])
-        logger.debug("Stream cache full (%d), evicting oldest: %s", len(stream_cache), oldest_key)
+    if len(stream_cache) >= MAX_STREAM_CACHE_SIZE and event_path not in stream_cache:
+        oldest_key = min(stream_cache.keys(), key=lambda k: stream_cache[k]["timestamp"])
         stream_cache.pop(oldest_key, None)
+    
     stream_cache[event_path] = {
         "url": url,
         "headers": headers,
-        "timestamp": time.time()
+        "timestamp": time.time(),
+        "source": source
     }
     logger.debug("Cached stream for '%s' (TTL: %ds, total: %d)", event_path, STREAM_CACHE_TTL, len(stream_cache))
 
@@ -373,6 +374,18 @@ async def stream_event(event_path: str, request: Request):
     
     # Check cache first
     cached = _get_cached_stream(event_path)
+    
+    if cached and cached.get("source") != "admin":
+        from scraper import check_better_source_available
+        try:
+            has_better = await check_better_source_available(event_path, cached.get("source"))
+            if has_better:
+                logger.info("A better stream source came online for %s! Invalidating cache.", event_path)
+                cached = None
+                stream_cache.pop(event_path, None)
+        except Exception as e:
+            logger.error("Failed to check for better source: %s", e)
+
     if cached and cached["url"]:
         logger.info("GET: serving from cache: %s", cached["url"][:120])
         _set_stream_headers(event_path, cached["headers"])
@@ -399,7 +412,7 @@ async def stream_event(event_path: str, request: Request):
     logger.info("GET: scraper found m3u8: %s", url[:120])
     
     # Cache the result
-    _set_cached_stream(event_path, url, headers)
+    _set_cached_stream(event_path, url, headers, stream_data.get("source"))
     
     # Store headers for segment proxying
     _set_stream_headers(event_path, headers)
