@@ -102,16 +102,6 @@ def _build_proxy_headers(captured_headers: dict) -> dict:
 
 import re
 
-def _ensure_version_tag(lines: list[str]) -> list[str]:
-    """Ensure #EXT-X-VERSION:3 is present — required by iOS AVPlayer."""
-    has_version = any(l.startswith('#EXT-X-VERSION') for l in lines)
-    if not has_version:
-        # Insert right after #EXTM3U (index 0) if present, else prepend
-        idx = 1 if lines and lines[0].startswith('#EXTM3U') else 0
-        lines.insert(idx, '#EXT-X-VERSION:3')
-    return lines
-
-
 def rewrite_m3u8(content: str, base_url: str, proxy_base_url: str, stream_id: str = "") -> str:
     """
     Rewrite an m3u8 playlist so all URLs point through our proxy.
@@ -152,7 +142,6 @@ def rewrite_m3u8(content: str, base_url: str, proxy_base_url: str, stream_id: st
             b64_url = base64.urlsafe_b64encode(absolute_url.encode('utf-8')).decode('utf-8')
             new_lines.append(f"{proxy_base_url}/proxy/m3u8/{b64_url}.m3u8{sid_param}")
             
-        new_lines = _ensure_version_tag(new_lines)
         logger.info("M3U8 master rewritten: forced highest bandwidth variant")
         return "\n".join(new_lines)
 
@@ -190,7 +179,6 @@ def rewrite_m3u8(content: str, base_url: str, proxy_base_url: str, stream_id: st
             else:
                 rewritten_lines.append(f"{proxy_base_url}/proxy/media/{b64_url}.ts{sid_param}")
     
-    rewritten_lines = _ensure_version_tag(rewritten_lines)
     logger.info("M3U8 rewritten: %d lines", len(rewritten_lines))
     return "\n".join(rewritten_lines)
 
