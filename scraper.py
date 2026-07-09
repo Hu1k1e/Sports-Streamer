@@ -205,6 +205,15 @@ async def get_all_events() -> list[dict]:
             live_data = response_live.json()
             
             live_ids = {m["id"] for m in live_data}
+            
+            # CRITICAL: At midnight UTC, /all-today resets. Any live event that
+            # started before midnight will disappear from all_data, even though it's
+            # still in live_data. We must merge them to prevent channels dropping.
+            all_ids = {m["id"] for m in all_data}
+            for live_match in live_data:
+                if live_match["id"] not in all_ids:
+                    all_data.append(live_match)
+                    
             events = _parse_events(all_data, live_ids=live_ids)
             
             # Filter out events that have no actual streams available, UNLESS they are live
