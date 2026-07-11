@@ -2,6 +2,10 @@ import os
 
 # Base configuration
 STREAMED_PK_URL = os.getenv("STREAMED_PK_URL", "https://streamed.pk")
+STREAMED_MIRRORS = [
+    STREAMED_PK_URL,
+    "https://streamed.st"
+]
 
 # Proxy settings
 PROXY_HOST = os.getenv("PROXY_HOST", "http://127.0.0.1:7694")

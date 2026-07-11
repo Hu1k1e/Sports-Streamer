@@ -5,7 +5,7 @@ import time
 from curl_cffi.requests import AsyncSession
 from playwright.async_api import async_playwright, Browser, Playwright
 from playwright_stealth import Stealth
-from config import STREAMED_PK_URL, DEFAULT_HEADERS, DEBUG_LOGGING
+from config import STREAMED_PK_URL, STREAMED_MIRRORS, DEFAULT_HEADERS, DEBUG_LOGGING
 
 _playwright_instance: Playwright | None = None
 _playwright_browser: Browser | None = None
@@ -66,6 +66,24 @@ def _evict_expired():
     if expired:
         logger.debug("Evicted %d expired API cache entries: %s", len(expired), expired)
 
+async def _api_get(client: AsyncSession, endpoint: str, timeout: int = 15):
+    """Make a GET request, falling back through mirrors if one fails."""
+    last_err = None
+    for mirror in STREAMED_MIRRORS:
+        url = f"{mirror}{endpoint}"
+        try:
+            resp = await client.get(url, timeout=timeout)
+            if resp.status_code == 200:
+                return resp
+            last_err = f"HTTP {resp.status_code}"
+            logger.warning("API mirror %s returned %s for %s", mirror, resp.status_code, endpoint)
+        except Exception as e:
+            last_err = str(e)
+            logger.warning("API mirror %s failed for %s: %s", mirror, endpoint, e)
+            
+    raise Exception(f"All API mirrors failed for {endpoint}. Last error: {last_err}")
+
+
 
 def _get_cached(key: str):
     _evict_expired()
@@ -98,12 +116,11 @@ async def get_sports() -> dict[str, str]:
     if cached is not None:
         return cached
 
-    logger.info("Fetching sports from %s/sports", API_BASE_URL)
+    logger.info("Fetching sports from /api/sports (using mirrors)")
     client = _get_api_session()
     for attempt in range(3):
         try:
-            response = await client.get(f"{API_BASE_URL}/sports")
-            response.raise_for_status()
+            response = await _api_get(client, "/api/sports")
             data = response.json()
             
             for sport in data:
@@ -131,12 +148,11 @@ async def get_live_events() -> list[dict]:
     if cached is not None:
         return cached
 
-    logger.info("Fetching live events from %s/matches/live", API_BASE_URL)
+    logger.info("Fetching live events from /api/matches/live (using mirrors)")
     client = _get_api_session()
     for attempt in range(3):
         try:
-            response = await client.get(f"{API_BASE_URL}/matches/live")
-            response.raise_for_status()
+            response = await _api_get(client, "/api/matches/live")
             data = response.json()
 
             events = _parse_events(data, is_live=True)
@@ -163,11 +179,10 @@ async def _has_any_stream(client: AsyncSession, event: dict, semaphore: asyncio.
             if not src_name or not src_id:
                 continue
             try:
-                resp = await client.get(f"{API_BASE_URL}/stream/{src_name}/{src_id}", timeout=5)
-                if resp.status_code == 200:
-                    streams = resp.json()
-                    if isinstance(streams, list) and len(streams) > 0:
-                        return True
+                resp = await _api_get(client, f"/api/stream/{src_name}/{src_id}", timeout=5)
+                streams = resp.json()
+                if isinstance(streams, list) and len(streams) > 0:
+                    return True
             except Exception:
                 pass
         return False
@@ -182,14 +197,14 @@ async def get_all_events() -> list[dict]:
     if cached is not None:
         return cached
     
-    logger.info("Fetching all events from %s/matches/all-today", API_BASE_URL)
+    logger.info("Fetching all events from /api/matches/all-today (using mirrors)")
     client = _get_api_session()
     for attempt in range(3):
         try:
             # Fetch both endpoints concurrently so we can tag live status
             response_all, response_live = await asyncio.gather(
-                client.get(f"{API_BASE_URL}/matches/all-today"),
-                client.get(f"{API_BASE_URL}/matches/live"),
+                _api_get(client, "/api/matches/all-today"),
+                _api_get(client, "/api/matches/live"),
                 return_exceptions=True
             )
             
@@ -197,10 +212,7 @@ async def get_all_events() -> list[dict]:
                 raise response_all
             if isinstance(response_live, Exception):
                 raise response_live
-
-            response_all.raise_for_status()
-            response_live.raise_for_status()
-            
+                
             all_data = response_all.json()
             live_data = response_live.json()
             
@@ -333,9 +345,8 @@ PREFERRED_SOURCES = [
 async def _fetch_stream_from_source(client: AsyncSession, source_name: str, source_id: str) -> list:
     """Helper to fetch streams for a specific source."""
     try:
-        resp = await client.get(f"{API_BASE_URL}/stream/{source_name}/{source_id}")
-        if resp.status_code == 200:
-            return resp.json()
+        resp = await _api_get(client, f"/api/stream/{source_name}/{source_id}")
+        return resp.json()
     except Exception:
         pass
     return []
