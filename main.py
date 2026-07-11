@@ -8,7 +8,6 @@ import httpx
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 from scraper import get_live_events, get_all_events, get_sports, get_stream_url
-from scraper_sportsurge import get_sportsurge_events, get_sportsurge_stream
 from scraper_webcric import get_webcric_events, get_webcric_stream
 from proxy import proxy_m3u8, proxy_media, rewrite_m3u8
 from config import PROXY_HOST, STREAM_CACHE_TTL, STREAMED_PK_URL, EPG_DEFAULT_DURATION_HOURS
@@ -52,6 +51,7 @@ async def startup_event():
     from scraper import init_playwright
     await init_playwright()
     asyncio.create_task(prewarm_popular_streams_task())
+    asyncio.create_task(stream_health_check_task())
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -103,6 +103,58 @@ async def prewarm_popular_streams_task():
             logger.error("[Pre-warm] Error in background task: %s. Retrying in 5 seconds...", e)
             # Failure: Wait 5 seconds and retry the loop immediately
             await asyncio.sleep(5)
+
+async def stream_health_check_task():
+    """
+    Periodically check the health of cached streams. If a stream is dead,
+    evict it from the cache so the next request triggers a fresh scrape.
+    Runs every 2 minutes.
+    """
+    logger.info("Starting stream health check task...")
+    await asyncio.sleep(15)
+    
+    while True:
+        try:
+            now = time.time()
+            # Only check streams that are currently cached
+            keys_to_check = list(stream_cache.keys())
+            if not keys_to_check:
+                await asyncio.sleep(120)
+                continue
+                
+            logger.info("[Health Check] Checking %d cached streams...", len(keys_to_check))
+            for event_path in keys_to_check:
+                entry = stream_cache.get(event_path)
+                if not entry:
+                    continue
+                    
+                # Skip if it's very fresh (< 30s) or about to expire anyway
+                age = now - entry["timestamp"]
+                if age < 30 or age > (STREAM_CACHE_TTL - 30):
+                    continue
+                    
+                url = entry["url"]
+                headers = entry["headers"]
+                
+                try:
+                    async with httpx.AsyncClient(timeout=10) as client:
+                        # Fast check — just need headers to see if it's 200 OK
+                        resp = await client.head(url, headers=headers)
+                        if resp.status_code != 200:
+                            logger.warning("[Health Check] Stream '%s' returned %d. Evicting from cache.", event_path, resp.status_code)
+                            stream_cache.pop(event_path, None)
+                except Exception as e:
+                    logger.warning("[Health Check] Failed to check stream '%s': %s. Evicting.", event_path, e)
+                    stream_cache.pop(event_path, None)
+                    
+                # Small delay between checks to avoid spamming
+                await asyncio.sleep(1)
+                
+        except Exception as e:
+            logger.error("[Health Check] Error in background task: %s", e)
+            
+        await asyncio.sleep(120)
+
 
 def _evict_expired_streams():
     """Remove all expired entries from the stream cache."""
@@ -395,11 +447,11 @@ async def stream_event(event_path: str, request: Request):
         if m3u8_content:
             return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers=_M3U8_HEADERS)
         else:
-            logger.warning("GET: cached URL returned empty m3u8, invalidating cache")
+            logger.warning("GET: cached URL returned empty m3u8, invalidating cache and triggering failover scrape")
             stream_cache.pop(event_path, None)
     
-    # Cache miss or invalid — do a fresh scrape
-    logger.info("GET: cache miss, starting Playwright scrape for '%s'", event_path)
+    # Cache miss or invalid (or failover) — do a fresh scrape
+    logger.info("GET: cache miss or failover, starting Playwright scrape for '%s'", event_path)
     stream_data = await get_stream_url(event_path)
     
     if not stream_data or not stream_data.get("url"):
@@ -444,6 +496,10 @@ async def handle_proxy_m3u8(b64_url: str, request: Request):
         return Response(content="Stream session expired", status_code=502)
     proxy_base_url = str(request.base_url).rstrip('/')
     m3u8_content = await proxy_m3u8(url, headers, proxy_base_url, stream_id=stream_id)
+    if not m3u8_content:
+        logger.warning("Sub-playlist fetch failed for stream '%s', invalidating cache to force failover on next reload", stream_id)
+        stream_cache.pop(stream_id, None)
+        return Response(content="Failed to fetch sub-playlist", status_code=502)
     return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers=_M3U8_HEADERS)
 
 
@@ -536,120 +592,4 @@ if __name__ == "__main__":
     import uvicorn
     # When running locally without Docker
     uvicorn.run(app, host="0.0.0.0", port=5000)
-
-
-def _sync_poster(sportsurge_title: str, streamed_events: list) -> str | None:
-    best_score = 0.85
-    best_logo = None
-    best_is_live = False
-    
-    import re
-    # Remove leading channel numbers like "11 " from the title
-    s_clean = re.sub(r'^\d+\s+', '', sportsurge_title.lower())
-    s_clean = s_clean.replace(' vs ', ' ').replace('-', ' ')
-    s_words = set(s_clean.split())
-    if not s_words:
-        return None
-        
-    for event in streamed_events:
-        e_clean = event['name'].lower().replace(' vs ', ' ').replace('-', ' ')
-        e_words = set(e_clean.split())
-        if not e_words:
-            continue
-            
-        overlap = len(s_words & e_words) / max(1, len(s_words | e_words))
-        
-        # If one title is entirely contained in the other, treat as a very strong match
-        if s_words.issubset(e_words) or e_words.issubset(s_words):
-            overlap = max(overlap, 0.9)
-            
-        is_live = event.get('is_live', False)
-        
-        # Prioritize live games. If a game is live, we give it a slight edge
-        # so an active game's poster overwrites an expired game's poster.
-        if overlap > best_score or (overlap >= best_score and is_live and not best_is_live):
-            best_score = overlap
-            best_logo = event.get('logo_url')
-            best_is_live = is_live
-            
-    return best_logo
-
-@app.api_route("/sportsurge.m3u", methods=["GET", "HEAD"])
-async def generate_sportsurge_playlist(request: Request):
-    events = await get_sportsurge_events()
-    streamed_events = await get_all_events()
-    base_url = str(request.base_url).rstrip('/')
-    
-    m3u = ["#EXTM3U"]
-    for event in events:
-        if not event.get('is_live'):
-            continue
-            
-        synced_logo = _sync_poster(event['title'], streamed_events)
-        logo_url = synced_logo or event.get('logo') or f"{base_url}/api/images/badge/default"
-        title = "[LIVE] " + event['title']
-            
-        m3u.append(f'#EXTINF:-1 tvg-id="{event["id"]}" tvg-name="{event["title"]}" tvg-logo="{logo_url}" group-title="{event["sport"]}",{title}')
-        m3u.append(f"{base_url}/sportsurge/stream/{event['id']}")
-        
-    return Response(content="\n".join(m3u), media_type="application/vnd.apple.mpegurl")
-
-
-@app.api_route("/sportsurge.xml", methods=["GET", "HEAD"])
-async def generate_sportsurge_epg(request: Request):
-    events = await get_sportsurge_events()
-    streamed_events = await get_all_events()
-    xml = ['<?xml version="1.0" encoding="UTF-8"?>', '<tv generator-info-name="Streamed.pk Proxy">']
-    
-    for event in events:
-        if not event.get('is_live'):
-            continue
-            
-        xml.append(f'  <channel id="{event["id"]}">')
-        xml.append(f'    <display-name>{_xml_escape(event["title"])}</display-name>')
-        
-        synced_logo = _sync_poster(event['title'], streamed_events)
-        logo_url = synced_logo or event.get('logo')
-        if logo_url:
-            xml.append(f'    <icon src="{_xml_escape(logo_url)}" />')
-        xml.append(f'  </channel>')
-        
-        # We don\'t have real times for sportsurge, so just use current time to +24h
-        start_time = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S +0000")
-        stop_time = (datetime.now(timezone.utc) + timedelta(hours=24)).strftime("%Y%m%d%H%M%S +0000")
-        
-        xml.append(f'  <programme start="{start_time}" stop="{stop_time}" channel="{event["id"]}">')
-        xml.append(f'    <title lang="en">{_xml_escape(event["title"])}</title>')
-        xml.append(f'    <desc lang="en">{_xml_escape(event["sport"])} - Watch Live on Sportsurge</desc>')
-        if logo_url:
-            xml.append(f'    <icon src="{_xml_escape(logo_url)}" />')
-        xml.append(f'  </programme>')
-        
-    xml.append('</tv>')
-    return Response(content="\n".join(xml), media_type="application/xml")
-
-
-@app.api_route("/sportsurge/stream/{event_id}", methods=["GET", "HEAD"])
-async def stream_sportsurge_event(request: Request, event_id: str):
-    if request.method == "HEAD":
-        return Response(status_code=200, headers={"Content-Type": "application/vnd.apple.mpegurl"})
-        
-    logger.info(f"Sportsurge GET request for {event_id}")
-    stream_data = await get_sportsurge_stream(event_id)
-    
-    if not stream_data or not stream_data.get("url"):
-        return Response(content="Stream not found or offline", status_code=404)
-        
-    url = stream_data["url"]
-    headers = stream_data["headers"]
-    
-    # Store headers for segment proxying
-    _set_stream_headers(f"sportsurge-{event_id}", headers)
-    
-    proxy_base_url = str(request.base_url).rstrip('/')
-    m3u8_content = await proxy_m3u8(url, headers, proxy_base_url, stream_id=f"sportsurge-{event_id}")
-    
-    if m3u8_content:
-        return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl")
-    return Response(content="Failed to proxy sportsurge m3u8", status_code=500)
 
