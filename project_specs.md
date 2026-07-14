@@ -101,5 +101,3 @@ services:
 
 - **[2026-07-14]**: Reduced temporary dead stream ban TTL from 10 minutes to 1 minute.
 - **[2026-07-14]**: Refactored get_stream_url to evaluate embed URLs concurrently in batches of 4. Instead of taking ~8s per dead stream sequentially (which would still timeout Jellyfin if there are 10 dead admin streams), it now tests 4 streams simultaneously. This ensures the scraper can burn through 10 dead streams in just ~24 seconds max, significantly reducing stream startup failures and timeouts.
-
-- **[2026-07-14]**: Implemented strict source priority matching the UI order (Admin > Delta > Golf > Echo) instead of just sorting by viewers. This prevents lower-tier streams with temporarily bloated viewer counts from leapfrogging higher-quality sources.

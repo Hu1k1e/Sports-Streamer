@@ -395,17 +395,10 @@ async def _get_embed_urls(match_id: str) -> list[str]:
         return []
 
     # Sort streams according to priority
-    # Priority order matches the UI: Admin -> Delta -> Golf -> Echo
-    SOURCE_PRIORITIES = {
-        "admin": 4,
-        "delta": 3,
-        "golf": 2,
-        "echo": 1
-    }
     def stream_priority(s):
-        source = s.get('source', '').lower()
-        priority_score = SOURCE_PRIORITIES.get(source, 0)
-        return (priority_score, s.get('viewers', 0))
+        # Prioritize admin streams, then sort by viewers
+        is_admin = s.get('source') == 'admin'
+        return (is_admin, s.get('viewers', 0))
         
     all_streams.sort(key=stream_priority, reverse=True)
     
