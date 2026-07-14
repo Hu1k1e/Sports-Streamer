@@ -411,20 +411,6 @@ async def _get_embed_urls(match_id: str) -> list[str]:
                         
     return urls
 
-async def check_better_source_available(match_id: str, cached_source: str) -> bool:
-    """
-    Quickly checks the REST API to see if a higher-priority source (like 'admin')
-    has come online while we are stuck on a lower-priority cached source.
-    Returns True if we should invalidate the cache.
-    """
-    if cached_source == 'admin':
-        return False
-        
-    embeds = await _get_embed_urls(match_id)
-    if embeds and embeds[0]["source"] == "admin" and cached_source != "admin":
-        return True
-    return False
-
 
 
 async def get_stream_url(match_id: str):
@@ -492,8 +478,8 @@ async def get_stream_url(match_id: str):
                     await page.goto(embed_url, wait_until="commit", timeout=15000)
                     logger.info("Embed page loaded")
 
-                    # Fast poll for m3u8 network request (checks every 500ms up to 20s max)
-                    for _ in range(40):
+                    # Fast poll for m3u8 network request (checks every 500ms up to 6s max)
+                    for _ in range(12):
                         if m3u8_url:
                             break
                         await page.wait_for_timeout(500)
@@ -501,14 +487,19 @@ async def get_stream_url(match_id: str):
                     # If not yet captured, try clicking video/player elements
                     if not m3u8_url:
                         logger.info("Trying to click video/player elements...")
-                        for selector in ["video", ".player", "[class*='player']", ".video-container", "iframe", "body"]:
+                        # Only check primary player elements
+                        for selector in [".player", "[class*='player']", "video", "iframe"]:
                             if m3u8_url:
                                 break
                             try:
                                 element = await page.query_selector(selector)
                                 if element:
-                                    await element.click(timeout=2000)
-                                    await page.wait_for_timeout(2000)
+                                    await element.click(timeout=1000)
+                                    # Wait up to 3 seconds after clicking
+                                    for _ in range(6):
+                                        if m3u8_url: break
+                                        await page.wait_for_timeout(500)
+                                    break  # We clicked something, no need to try other selectors
                             except Exception:
                                 pass
 

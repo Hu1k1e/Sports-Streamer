@@ -138,9 +138,11 @@ async def stream_health_check_task():
                 
                 try:
                     async with httpx.AsyncClient(timeout=10) as client:
-                        # Fast check — just need headers to see if it's 200 OK
-                        resp = await client.head(url, headers=headers)
-                        if resp.status_code != 200:
+                        # Fast check — use GET with Range to avoid CDNs that block HEAD
+                        check_headers = headers.copy()
+                        check_headers["Range"] = "bytes=0-1024"
+                        resp = await client.get(url, headers=check_headers)
+                        if resp.status_code not in (200, 206):
                             logger.warning("[Health Check] Stream '%s' returned %d. Evicting from cache.", event_path, resp.status_code)
                             stream_cache.pop(event_path, None)
                 except Exception as e:
@@ -426,17 +428,7 @@ async def stream_event(event_path: str, request: Request):
     
     # Check cache first
     cached = _get_cached_stream(event_path)
-    
-    if cached and cached.get("source") != "admin":
-        from scraper import check_better_source_available
-        try:
-            has_better = await check_better_source_available(event_path, cached.get("source"))
-            if has_better:
-                logger.info("A better stream source came online for %s! Invalidating cache.", event_path)
-                cached = None
-                stream_cache.pop(event_path, None)
-        except Exception as e:
-            logger.error("Failed to check for better source: %s", e)
+
 
     if cached and cached["url"]:
         logger.info("GET: serving from cache: %s", cached["url"][:120])
