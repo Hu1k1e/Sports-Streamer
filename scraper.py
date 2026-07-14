@@ -352,6 +352,9 @@ async def _fetch_stream_from_source(client: AsyncSession, source_name: str, sour
     return []
 
 
+_dead_embed_urls: dict[str, float] = {}
+_DEAD_STREAM_TTL = 600  # 10 minutes
+
 async def _get_embed_urls(match_id: str) -> list[str]:
     """
     Get the embed URLs for a match using its sources via the Stream API.
@@ -399,15 +402,27 @@ async def _get_embed_urls(match_id: str) -> list[str]:
         
     all_streams.sort(key=stream_priority, reverse=True)
     
+    now = time.time()
+    # Clean up expired dead streams
+    expired_dead = [u for u, ts in _dead_embed_urls.items() if (now - ts) > _DEAD_STREAM_TTL]
+    for u in expired_dead:
+        _dead_embed_urls.pop(u, None)
+    
     urls = []
     for s in all_streams:
         u = s.get("embedUrl")
         source = s.get("source")
-        if u and not any(d["url"] == u for d in urls):
-            urls.append({"url": u, "source": source})
-            logger.info("Found candidate stream from %s (viewers=%s, HD=%s, lang=%s): %s",
-                        source, s.get("viewers"), s.get("hd"),
-                        s.get("language"), u)
+        if not u or any(d["url"] == u for d in urls):
+            continue
+            
+        if u in _dead_embed_urls:
+            logger.info("Skipping recently dead stream: %s", u)
+            continue
+            
+        urls.append({"url": u, "source": source})
+        logger.info("Found candidate stream from %s (viewers=%s, HD=%s, lang=%s): %s",
+                    source, s.get("viewers"), s.get("hd"),
+                    s.get("language"), u)
                         
     return urls
 
@@ -514,8 +529,10 @@ async def get_stream_url(match_id: str):
                         return {"url": m3u8_url, "headers": m3u8_headers, "content": m3u8_content, "source": embed_source}
                     else:
                         logger.warning("Failed to extract m3u8 from %s", embed_url)
+                        _dead_embed_urls[embed_url] = time.time()
                 except Exception as e:
                     logger.error("Playwright error during get_stream_url: %s", e)
+                    _dead_embed_urls[embed_url] = time.time()
                 finally:
                     await page.close()
         finally:
