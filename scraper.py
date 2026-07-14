@@ -353,7 +353,7 @@ async def _fetch_stream_from_source(client: AsyncSession, source_name: str, sour
 
 
 _dead_embed_urls: dict[str, float] = {}
-_DEAD_STREAM_TTL = 600  # 10 minutes
+_DEAD_STREAM_TTL = 60  # 1 minute
 
 async def _get_embed_urls(match_id: str) -> list[str]:
     """
@@ -451,18 +451,16 @@ async def get_stream_url(match_id: str):
     async with playwright_semaphore:
         context = await _playwright_browser.new_context(user_agent=DEFAULT_HEADERS["User-Agent"])
         try:
-            
-            for embed_dict in embed_urls:
+            async def _test_embed(embed_dict, ctx):
                 embed_url = embed_dict["url"]
                 embed_source = embed_dict["source"]
                 logger.info("Navigating to embed URL: %s (Source: %s)", embed_url, embed_source)
-                page = await context.new_page()
+                page = await ctx.new_page()
 
                 m3u8_url = None
                 m3u8_headers = {}
                 m3u8_content = None
 
-                # Block unneeded resources to speed up page load
                 async def intercept_route(route):
                     if route.request.resource_type in ["image", "stylesheet", "font"]:
                         await route.abort()
@@ -489,20 +487,14 @@ async def get_stream_url(match_id: str):
                 page.on("response", on_response)
 
                 try:
-                    # Use 'commit' to skip waiting for the heavy DOM to parse, making it MUCH faster.
                     await page.goto(embed_url, wait_until="commit", timeout=15000)
-                    logger.info("Embed page loaded")
-
-                    # Fast poll for m3u8 network request (checks every 500ms up to 6s max)
+                    
                     for _ in range(12):
                         if m3u8_url:
                             break
                         await page.wait_for_timeout(500)
 
-                    # If not yet captured, try clicking video/player elements
                     if not m3u8_url:
-                        logger.info("Trying to click video/player elements...")
-                        # Only check primary player elements
                         for selector in [".player", "[class*='player']", "video", "iframe"]:
                             if m3u8_url:
                                 break
@@ -510,22 +502,19 @@ async def get_stream_url(match_id: str):
                                 element = await page.query_selector(selector)
                                 if element:
                                     await element.click(timeout=1000)
-                                    # Wait up to 3 seconds after clicking
                                     for _ in range(6):
                                         if m3u8_url: break
                                         await page.wait_for_timeout(500)
-                                    break  # We clicked something, no need to try other selectors
+                                    break
                             except Exception:
                                 pass
 
                     if m3u8_url:
-                        # Capture cookies and attach to headers for proxy
-                        cookies = await context.cookies()
+                        cookies = await ctx.cookies()
                         cookie_str = "; ".join([f"{c['name']}={c['value']}" for c in cookies])
                         if cookie_str:
                             m3u8_headers["Cookie"] = cookie_str
 
-                        logger.info("=== get_stream_url SUCCESS ===")
                         return {"url": m3u8_url, "headers": m3u8_headers, "content": m3u8_content, "source": embed_source}
                     else:
                         logger.warning("Failed to extract m3u8 from %s", embed_url)
@@ -535,6 +524,21 @@ async def get_stream_url(match_id: str):
                     _dead_embed_urls[embed_url] = time.time()
                 finally:
                     await page.close()
+                return None
+
+            batch_size = 4
+            for i in range(0, len(embed_urls), batch_size):
+                batch = embed_urls[i:i+batch_size]
+                logger.info("Checking batch of %d streams concurrently...", len(batch))
+                tasks = [_test_embed(ed, context) for ed in batch]
+                results = await asyncio.gather(*tasks)
+                
+                # Check results in their original priority order
+                for res in results:
+                    if res and res.get("url"):
+                        logger.info("=== get_stream_url SUCCESS ===")
+                        return res
+                        
         finally:
             await context.close()
             
