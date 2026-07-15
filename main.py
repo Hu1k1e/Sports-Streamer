@@ -345,7 +345,10 @@ async def proxy_image(match_id: str):
     logo_url = event["logo_url"]
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            resp = await client.get(logo_url)
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/110.0.0.0 Safari/537.36"
+            }
+            resp = await client.get(logo_url, headers=headers)
             resp.raise_for_status()
             content_type = resp.headers.get("content-type", "image/webp")
             return Response(content=resp.content, media_type=content_type)

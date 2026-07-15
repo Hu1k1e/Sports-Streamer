@@ -7,11 +7,18 @@ logger = logging.getLogger("scraper_livextv")
 
 # The original hardcoded premium channels the user explicitly wants to keep
 HARDCODED_CHANNELS = [
-    {"id": "fox4k-usa", "title": "Fox 4K", "embedUrl": "https://ritzembeds.pages.dev/play/fox4k-usa"},
-    {"id": "bbcone-uk", "title": "BBC One", "embedUrl": "https://ritzembeds.pages.dev/play/bbcone-uk"},
-    {"id": "fox-usa", "title": "Fox (Hardcoded)", "embedUrl": "https://ritzembeds.pages.dev/play/fox-usa"},
-    {"id": "tsn1-ca", "title": "TSN 1", "embedUrl": "https://ritzembeds.pages.dev/play/tsn1-ca"},
+    {"id": "fox4k-usa", "title": "Fox 4K", "embedUrl": "https://ritzembeds.pages.dev/play/fox4k-usa", "logo": "https://raw.githubusercontent.com/tv-logo/tv-logos/main/countries/united-states/fox-us.png"},
+    {"id": "bbcone-uk", "title": "BBC One", "embedUrl": "https://ritzembeds.pages.dev/play/bbcone-uk", "logo": "https://raw.githubusercontent.com/tv-logo/tv-logos/main/countries/united-kingdom/bbc-one-uk.png"},
+    {"id": "fox-usa", "title": "Fox (Hardcoded)", "embedUrl": "https://ritzembeds.pages.dev/play/fox-usa", "logo": "https://raw.githubusercontent.com/tv-logo/tv-logos/main/countries/united-states/fox-us.png"},
+    {"id": "tsn1-ca", "title": "TSN 1", "embedUrl": "https://ritzembeds.pages.dev/play/tsn1-ca", "logo": "https://raw.githubusercontent.com/tv-logo/tv-logos/main/countries/canada/tsn-1-ca.png"},
 ]
+
+# Overrides for API channels that have broken or missing logos in the source API
+API_LOGO_OVERRIDES = {
+    "bbc-america": "https://raw.githubusercontent.com/tv-logo/tv-logos/main/countries/united-states/bbc-america-us.png",
+    "fox-sports-1": "https://raw.githubusercontent.com/tv-logo/tv-logos/main/countries/united-states/fox-sports-1-us.png",
+    "fox-sports-2": "https://raw.githubusercontent.com/tv-logo/tv-logos/main/countries/united-states/fox-sports-2-us.png",
+}
 
 # The whitelist of channel IDs from the JSON API the user explicitly requested
 API_WHITELIST = {
@@ -66,7 +73,7 @@ async def get_livextv_events():
             "category": "24/7 Channels",
             "date": 0,
             "poster": "",
-            "logo_url": "", 
+            "logo_url": channel.get("logo", ""), 
             "home_badge_url": "",
             "away_badge_url": "",
             "sources": [{"source": channel["title"], "id": f"hc-{channel['id']}Ctx"}], # Differentiate ID context
@@ -85,7 +92,7 @@ async def get_livextv_events():
                 "category": "24/7 Channels",
                 "date": 0,
                 "poster": "",
-                "logo_url": channel.get("logo", ""),  # High-quality logo directly from API!
+                "logo_url": API_LOGO_OVERRIDES.get(ch_id) or channel.get("logo", ""),
                 "home_badge_url": "",
                 "away_badge_url": "",
                 "sources": [{"source": channel.get("name", ""), "id": ch_id}],
