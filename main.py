@@ -334,6 +334,8 @@ async def proxy_image(match_id: str):
     guarantee cache busting with a clean, short URL.
     """
     events = await get_all_events()
+    livextv_events = await get_livextv_events()
+    events = livextv_events + events
     event = next((e for e in events if e["id"] == match_id), None)
     
     if not event or not event.get("logo_url"):
@@ -379,7 +381,8 @@ async def generate_playlist(request: Request):
     events.sort(key=_sort_key)
     
     # Prepend LiveXTV events at the very top
-    events = get_livextv_events() + events
+    livextv_events = await get_livextv_events()
+    events = livextv_events + events
     
     # Assign channel numbers: football gets 1-N, then other sports follow sequentially
     # Each sport group is contiguous so Jellyfin groups them together
@@ -432,7 +435,8 @@ async def generate_epg(request: Request):
     
     events.sort(key=_sort_key)
     
-    events = get_livextv_events() + events
+    livextv_events = await get_livextv_events()
+    events = livextv_events + events
     
     xml = ['<?xml version="1.0" encoding="UTF-8"?>']
     xml.append('<tv generator-info-name="Streamed.pk Proxy">')
