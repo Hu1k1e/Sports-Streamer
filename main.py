@@ -7,9 +7,9 @@ from fastapi.responses import PlainTextResponse, RedirectResponse
 import httpx
 from fastapi.middleware.cors import CORSMiddleware
 import asyncio
-from scraper import get_live_events, get_all_events, get_sports, get_stream_url
+from scraper import get_live_events, get_all_events, get_sports, get_stream_urls
 from scraper_webcric import get_webcric_events, get_webcric_stream
-from proxy import proxy_m3u8, proxy_media, rewrite_m3u8
+from proxy import proxy_m3u8, proxy_media, rewrite_m3u8, fetch_and_rewrite_best_sub_playlist
 from config import PROXY_HOST, STREAM_CACHE_TTL, STREAMED_PK_URL, EPG_DEFAULT_DURATION_HOURS
 
 logger = logging.getLogger("main")
@@ -52,6 +52,7 @@ async def startup_event():
     await init_playwright()
     asyncio.create_task(prewarm_popular_streams_task())
     asyncio.create_task(stream_health_check_task())
+    asyncio.create_task(active_stream_keeper_task())
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -84,12 +85,12 @@ async def prewarm_popular_streams_task():
                 cached = _get_cached_stream(event_path)
                 if not cached:
                     logger.info("[Pre-warm] Pre-warming stream '%s'...", event_path)
-                    stream_data = await get_stream_url(event_path)
+                    streams = await get_stream_urls(event_path, max_streams=3)
                     
-                    if stream_data and stream_data.get("url"):
-                        _set_cached_stream(event_path, stream_data["url"], stream_data["headers"], stream_data.get("source"))
-                        _set_stream_headers(event_path, stream_data["headers"])
-                        logger.info("[Pre-warm] Successfully pre-warmed '%s'", event_path)
+                    if streams:
+                        _set_cached_streams(event_path, streams)
+                        _set_stream_headers(event_path, streams[0]["headers"])
+                        logger.info("[Pre-warm] Successfully pre-warmed '%s' with %d streams", event_path, len(streams))
                     else:
                         logger.warning("[Pre-warm] Failed to pre-warm '%s'", event_path)
                 
@@ -133,8 +134,9 @@ async def stream_health_check_task():
                 if age < 30 or age > (STREAM_CACHE_TTL - 30):
                     continue
                     
-                url = entry["url"]
-                headers = entry["headers"]
+                active_stream = entry["streams"][entry["active_index"]]
+                url = active_stream["url"]
+                headers = active_stream["headers"]
                 
                 try:
                     async with httpx.AsyncClient(timeout=10) as client:
@@ -158,6 +160,82 @@ async def stream_health_check_task():
         await asyncio.sleep(120)
 
 
+async def active_stream_keeper_task():
+    """
+    Runs every 30 seconds. Finds streams Jellyfin is actively watching (last_access < 60s),
+    and sends lightweight heartbeat requests to their BACKUP streams to prevent CDN tokens
+    from expiring. If backups die, triggers a background Playwright scrape to replenish them.
+    """
+    logger.info("Starting active stream keeper task...")
+    await asyncio.sleep(20)
+    
+    while True:
+        try:
+            now = time.time()
+            for stream_id, headers_info in list(stream_headers_cache.items()):
+                if now - headers_info["last_access"] < 60:
+                    cached = stream_cache.get(stream_id)
+                    if not cached:
+                        continue
+                        
+                    active_idx = cached["active_index"]
+                    valid_backups = []
+                    
+                    # Ping all backups that are AFTER the active_index
+                    for i in range(active_idx + 1, len(cached["streams"])):
+                        backup = cached["streams"][i]
+                        if backup.get("dead"):
+                            continue
+                            
+                        try:
+                            check_headers = backup["headers"].copy()
+                            check_headers["Range"] = "bytes=0-1024"
+                            async with httpx.AsyncClient() as client:
+                                resp = await client.get(backup["url"], headers=check_headers, timeout=10)
+                                if resp.status_code in (200, 206):
+                                    valid_backups.append(backup)
+                                else:
+                                    logger.warning("[Keeper] Backup stream %s for %s died (HTTP %d).", backup.get("source"), stream_id, resp.status_code)
+                                    backup["dead"] = True
+                        except Exception:
+                            backup["dead"] = True
+                            
+                    # If active stream has NO valid backups left, spawn a background scrape!
+                    if not valid_backups:
+                        logger.info("[Keeper] Active stream '%s' has NO valid backups! Spawning background scrape...", stream_id)
+                        # We use asyncio.create_task so it doesn't block the keeper loop
+                        asyncio.create_task(_replenish_backups(stream_id))
+                        
+        except Exception as e:
+            logger.error("[Keeper] Error in background task: %s", e)
+            
+        await asyncio.sleep(30)
+
+
+async def _replenish_backups(stream_id: str):
+    """Silently fetches fresh streams and merges them into the cache."""
+    try:
+        new_streams = await get_stream_urls(stream_id, max_streams=3)
+        if not new_streams:
+            return
+            
+        cached = stream_cache.get(stream_id)
+        if cached:
+            # We don't want to overwrite the ACTIVE stream if it's still playing perfectly.
+            # Just append the new streams as backups.
+            active_stream = cached["streams"][cached["active_index"]]
+            merged_streams = [active_stream]
+            for ns in new_streams:
+                if ns["url"] != active_stream["url"]:
+                    merged_streams.append(ns)
+            
+            cached["streams"] = merged_streams
+            cached["active_index"] = 0
+            logger.info("[Keeper] Successfully replenished backups for '%s' (total: %d)", stream_id, len(merged_streams))
+    except Exception as e:
+        logger.error("[Keeper] Failed to replenish backups for '%s': %s", stream_id, e)
+
+
 def _evict_expired_streams():
     """Remove all expired entries from the stream cache."""
     now = time.time()
@@ -178,19 +256,28 @@ def _evict_expired_streams():
         logger.debug("Evicted %d stale header cache entries", len(stale_headers))
 
 
-def _get_cached_stream(event_path: str):
-    """Return cached stream data if still valid, else None."""
+def _get_cached_entry(event_path: str):
+    """Return the raw cache entry (with streams list and active_index) if valid."""
     _evict_expired_streams()
     entry = stream_cache.get(event_path)
     if entry and (time.time() - entry["timestamp"]) < STREAM_CACHE_TTL:
-        logger.debug("Cache HIT for '%s' (age: %.0fs)", event_path, time.time() - entry["timestamp"])
-        return {"url": entry["url"], "headers": entry["headers"], "source": entry.get("source")}
-    # Entry missing or expired (already cleaned by evict)
+        return entry
     return None
 
 
-def _set_cached_stream(event_path: str, url: str, headers: dict, source: str = None):
-    """Cache a successful stream result. Evicts old entries if over capacity."""
+def _get_cached_stream(event_path: str):
+    """Return the currently active stream data if still valid, else None."""
+    entry = _get_cached_entry(event_path)
+    if entry:
+        active_stream = entry["streams"][entry["active_index"]]
+        logger.debug("Cache HIT for '%s' (active_index: %d, age: %.0fs)", event_path, entry["active_index"], time.time() - entry["timestamp"])
+        return active_stream
+    return None
+
+
+def _set_cached_streams(event_path: str, streams: list):
+    """Cache a list of successful streams. Evicts old entries if over capacity."""
+    if not streams: return
     _evict_expired_streams()
     # If at capacity, drop the oldest entry
     if len(stream_cache) >= MAX_STREAM_CACHE_SIZE and event_path not in stream_cache:
@@ -198,12 +285,11 @@ def _set_cached_stream(event_path: str, url: str, headers: dict, source: str = N
         stream_cache.pop(oldest_key, None)
     
     stream_cache[event_path] = {
-        "url": url,
-        "headers": headers,
-        "timestamp": time.time(),
-        "source": source
+        "streams": streams,
+        "active_index": 0,
+        "timestamp": time.time()
     }
-    logger.debug("Cached stream for '%s' (TTL: %ds, total: %d)", event_path, STREAM_CACHE_TTL, len(stream_cache))
+    logger.debug("Cached %d streams for '%s' (TTL: %ds, total: %d)", len(streams), event_path, STREAM_CACHE_TTL, len(stream_cache))
 
 
 def _get_stream_headers(stream_id: str) -> dict | None:
@@ -444,19 +530,20 @@ async def stream_event(event_path: str, request: Request):
     
     # Cache miss or invalid (or failover) — do a fresh scrape
     logger.info("GET: cache miss or failover, starting Playwright scrape for '%s'", event_path)
-    stream_data = await get_stream_url(event_path)
+    streams = await get_stream_urls(event_path, max_streams=1)
     
-    if not stream_data or not stream_data.get("url"):
+    if not streams:
         logger.error("GET: scraper returned no m3u8 URL for '%s'", event_path)
         return Response(content="Stream not found or offline", status_code=404)
     
-    url = stream_data["url"]
-    headers = stream_data["headers"]
-    captured_content = stream_data.get("content")
+    active_stream = streams[0]
+    url = active_stream["url"]
+    headers = active_stream["headers"]
+    captured_content = active_stream.get("content")
     logger.info("GET: scraper found m3u8: %s", url[:120])
     
     # Cache the result
-    _set_cached_stream(event_path, url, headers, stream_data.get("source"))
+    _set_cached_streams(event_path, streams)
     
     # Store headers for segment proxying
     _set_stream_headers(event_path, headers)
@@ -489,9 +576,30 @@ async def handle_proxy_m3u8(b64_url: str, request: Request):
     proxy_base_url = str(request.base_url).rstrip('/')
     m3u8_content = await proxy_m3u8(url, headers, proxy_base_url, stream_id=stream_id)
     if not m3u8_content:
-        logger.warning("Sub-playlist fetch failed for stream '%s', invalidating cache to force failover on next reload", stream_id)
+        logger.warning("Sub-playlist fetch failed for stream '%s', attempting seamless failover", stream_id)
+        
+        cached = _get_cached_entry(stream_id)
+        if cached and cached["active_index"] + 1 < len(cached["streams"]):
+            # Failover!
+            cached["active_index"] += 1
+            new_stream = cached["streams"][cached["active_index"]]
+            logger.info("Seamless failover to backup stream: %s", new_stream.get("source"))
+            
+            # Update headers cache
+            _set_stream_headers(stream_id, new_stream["headers"])
+            
+            # Fetch and rewrite the new backup stream's sub-playlist
+            m3u8_content = await fetch_and_rewrite_best_sub_playlist(new_stream["url"], new_stream["headers"], proxy_base_url, stream_id=stream_id)
+            
+            if m3u8_content:
+                logger.info("Seamless failover successful for '%s'", stream_id)
+                return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers=_M3U8_HEADERS)
+                
+        # Total failure
+        logger.error("No valid backup streams available for '%s', dropping connection.", stream_id)
         stream_cache.pop(stream_id, None)
         return Response(content="Failed to fetch sub-playlist", status_code=502)
+        
     return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers=_M3U8_HEADERS)
 
 

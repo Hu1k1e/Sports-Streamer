@@ -428,25 +428,28 @@ async def _get_embed_urls(match_id: str) -> list[str]:
 
 
 
-async def get_stream_url(match_id: str):
+async def get_stream_urls(match_id: str, max_streams: int = 1):
     """
     End-to-end process:
     1. Resolve the embedUrl using the REST API
     2. Navigate Playwright to the embedUrl to capture the m3u8
+    Returns a list of working streams.
     """
-    logger.info("=== get_stream_url START ===")
-    logger.info("Match ID: %s", match_id)
+    logger.info("=== get_stream_urls START ===")
+    logger.info("Match ID: %s, Max Streams: %d", match_id, max_streams)
 
     # Step 1: Get embed URLs
     embed_urls = await _get_embed_urls(match_id)
     if not embed_urls:
         logger.error("Could not resolve any embed URL for match %s", match_id)
-        return {"url": None, "headers": {}, "content": None, "source": None}
+        return []
 
     # Step 2: Use Playwright just to evaluate the embed page and capture m3u8
     global _playwright_browser
     if not _playwright_browser:
         await init_playwright()
+
+    found_streams = []
 
     async with playwright_semaphore:
         context = await _playwright_browser.new_context(user_agent=DEFAULT_HEADERS["User-Agent"])
@@ -520,7 +523,7 @@ async def get_stream_url(match_id: str):
                         logger.warning("Failed to extract m3u8 from %s", embed_url)
                         _dead_embed_urls[embed_url] = time.time()
                 except Exception as e:
-                    logger.error("Playwright error during get_stream_url: %s", e)
+                    logger.error("Playwright error during get_stream_urls: %s", e)
                     _dead_embed_urls[embed_url] = time.time()
                 finally:
                     await page.close()
@@ -536,11 +539,18 @@ async def get_stream_url(match_id: str):
                 # Check results in their original priority order
                 for res in results:
                     if res and res.get("url"):
-                        logger.info("=== get_stream_url SUCCESS ===")
-                        return res
+                        found_streams.append(res)
+                
+                if len(found_streams) >= max_streams:
+                    logger.info("=== get_stream_urls SUCCESS (Found %d streams) ===", len(found_streams))
+                    return found_streams[:max_streams]
                         
         finally:
             await context.close()
             
-    logger.warning("=== get_stream_url FAILED ===")
-    return {"url": None, "headers": {}, "content": None, "source": None}
+    if found_streams:
+        logger.info("=== get_stream_urls SUCCESS (Found %d streams, wanted %d) ===", len(found_streams), max_streams)
+        return found_streams
+        
+    logger.warning("=== get_stream_urls FAILED ===")
+    return []

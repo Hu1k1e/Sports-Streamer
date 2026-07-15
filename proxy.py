@@ -222,6 +222,63 @@ async def proxy_m3u8(url: str, headers: dict, proxy_base_url: str, stream_id: st
     return ""
 
 
+async def fetch_and_rewrite_best_sub_playlist(master_url: str, headers: dict, proxy_base_url: str, stream_id: str = "") -> str:
+    """
+    Called during a seamless failover. 
+    It fetches the NEW master playlist, extracts the best variant, fetches its sub-playlist,
+    rewrites it, and INJECTS a #EXT-X-DISCONTINUITY tag.
+    """
+    logger.info("Executing seamless failover sub-playlist extraction from: %s", master_url[:100])
+    proxy_headers = _build_proxy_headers(headers)
+    proxy_headers["Accept"] = "application/vnd.apple.mpegurl, application/x-mpegURL, */*"
+    session = await _get_session()
+    
+    try:
+        # 1. Fetch master playlist
+        resp = await session.get(master_url, headers=proxy_headers, timeout=15)
+        if resp.status_code != 200:
+            logger.error("Failover master fetch failed: %d", resp.status_code)
+            return ""
+            
+        lines = resp.text.split('\n')
+        best_variant_url = None
+        highest_bw = -1
+        
+        for i, line in enumerate(lines):
+            line = line.strip()
+            if line.startswith('#EXT-X-STREAM-INF:'):
+                bw_match = re.search(r'BANDWIDTH=(\d+)', line)
+                bw = int(bw_match.group(1)) if bw_match else 0
+                if bw > highest_bw and i + 1 < len(lines):
+                    highest_bw = bw
+                    best_variant_url = urllib.parse.urljoin(str(resp.url), lines[i+1].strip())
+                    
+        if not best_variant_url:
+            # If no variants, assume the master URL is actually a sub-playlist
+            best_variant_url = str(resp.url)
+            
+        # 2. Fetch sub playlist
+        logger.info("Failover selected variant: %s", best_variant_url[:100])
+        resp2 = await session.get(best_variant_url, headers=proxy_headers, timeout=15)
+        if resp2.status_code != 200:
+            logger.error("Failover sub-playlist fetch failed: %d", resp2.status_code)
+            return ""
+            
+        # 3. Rewrite it
+        rewritten = rewrite_m3u8(resp2.text, str(resp2.url), proxy_base_url, stream_id=stream_id)
+        
+        # 4. Inject #EXT-X-DISCONTINUITY right after #EXTM3U
+        if rewritten.startswith("#EXTM3U"):
+            parts = rewritten.split('\n', 1)
+            if len(parts) > 1:
+                return f"#EXTM3U\n#EXT-X-DISCONTINUITY\n{parts[1]}"
+                
+        return rewritten
+    except Exception as e:
+        logger.error("Seamless failover fetch failed: %s", e)
+        return ""
+
+
 async def proxy_media(url: str, headers: dict, media_type: str = "video/MP2T"):
     """
     Fetches a video segment or encryption key using curl_cffi (Chrome TLS
