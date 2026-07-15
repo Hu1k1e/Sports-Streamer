@@ -529,21 +529,38 @@ async def get_stream_urls(match_id: str, max_streams: int = 1):
                     await page.close()
                 return None
 
+            # Group streams by source to ensure we never race a low-priority source against a high-priority one
+            from itertools import groupby
+            
+            # Since embed_urls is already sorted by priority (Admin > Delta > Golf > Echo),
+            # grouping by source name will keep them in the correct priority order.
+            grouped_sources = []
+            for k, g in groupby(embed_urls, key=lambda x: x['source']):
+                grouped_sources.append(list(g))
+                
             batch_size = 4
-            for i in range(0, len(embed_urls), batch_size):
-                batch = embed_urls[i:i+batch_size]
-                logger.info("Checking batch of %d streams concurrently...", len(batch))
-                tasks = [_test_embed(ed, context) for ed in batch]
-                results = await asyncio.gather(*tasks)
-                
-                # Check results in their original priority order
-                for res in results:
-                    if res and res.get("url"):
-                        found_streams.append(res)
-                
-                if len(found_streams) >= max_streams:
-                    logger.info("=== get_stream_urls SUCCESS (Found %d streams) ===", len(found_streams))
-                    return found_streams[:max_streams]
+            for source_group in grouped_sources:
+                for i in range(0, len(source_group), batch_size):
+                    batch = source_group[i:i+batch_size]
+                    logger.info("Checking batch of %d streams (Source: %s) concurrently...", len(batch), batch[0]['source'])
+                    
+                    tasks = [_test_embed(ed, context) for ed in batch]
+                    
+                    # as_completed yields tasks as soon as they finish, allowing instant return!
+                    for future in asyncio.as_completed(tasks):
+                        res = await future
+                        if res and res.get("url"):
+                            found_streams.append(res)
+                            if len(found_streams) >= max_streams:
+                                logger.info("=== get_stream_urls SUCCESS (Found %d streams) ===", len(found_streams))
+                                return found_streams[:max_streams]
+                                
+                    # If we found at least 1 stream in this batch but haven't hit max_streams,
+                    # we can optionally break early to serve the primary stream instantly,
+                    # letting the background task find backups later.
+                    if found_streams:
+                        logger.info("=== get_stream_urls SUCCESS (Found %d streams in batch, wanted %d) ===", len(found_streams), max_streams)
+                        return found_streams
                         
         finally:
             await context.close()
