@@ -271,12 +271,12 @@ async def fetch_and_rewrite_best_sub_playlist(master_url: str, headers: dict, pr
         if rewritten.startswith("#EXTM3U"):
             parts = rewritten.split('\n', 1)
             if len(parts) > 1:
-                return f"#EXTM3U\n#EXT-X-DISCONTINUITY\n{parts[1]}"
+                return f"#EXTM3U\n#EXT-X-DISCONTINUITY\n{parts[1]}", best_variant_url
                 
-        return rewritten
+        return rewritten, best_variant_url
     except Exception as e:
         logger.error("Seamless failover fetch failed: %s", e)
-        return ""
+        return "", ""
 
 
 async def proxy_media(url: str, headers: dict, media_type: str = "video/MP2T"):

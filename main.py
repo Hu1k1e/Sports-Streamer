@@ -9,6 +9,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import asyncio
 from scraper import get_live_events, get_all_events, get_sports, get_stream_urls
 from scraper_webcric import get_webcric_events, get_webcric_stream
+from scraper_livextv import get_livextv_events, get_livextv_stream
 from proxy import proxy_m3u8, proxy_media, rewrite_m3u8, fetch_and_rewrite_best_sub_playlist
 from config import PROXY_HOST, STREAM_CACHE_TTL, STREAMED_PK_URL, EPG_DEFAULT_DURATION_HOURS
 
@@ -363,15 +364,22 @@ async def generate_playlist(request: Request):
     
     base_url = str(request.base_url).rstrip('/')
     
-    # Custom sort: football (soccer) first, then alphabetical by sport, then name
+    # Custom sort: 24/7 Channels first, then football (soccer), then alphabetical by sport, then name
     def _sort_key(e):
         cat = e.get('category', 'other')
         display = sports.get(cat, cat.capitalize())
-        # Football gets sort prefix '0' so it appears first
-        prefix = '0' if cat == 'football' else '1'
+        if cat == '24/7 Channels':
+            prefix = '00'
+        elif cat == 'football':
+            prefix = '01'
+        else:
+            prefix = '02'
         return (prefix, display, e.get('name', ''))
     
     events.sort(key=_sort_key)
+    
+    # Prepend LiveXTV events at the very top
+    events = get_livextv_events() + events
     
     # Assign channel numbers: football gets 1-N, then other sports follow sequentially
     # Each sport group is contiguous so Jellyfin groups them together
@@ -410,14 +418,21 @@ async def generate_epg(request: Request):
     events = await get_all_events()
     sports = await get_sports()
     
-    # Custom sort: football (soccer) first, then alphabetical by sport, then name
+    # Custom sort: 24/7 Channels first, then football (soccer), then alphabetical by sport, then name
     def _sort_key(e):
         cat = e.get('category', 'other')
         display = sports.get(cat, cat.capitalize())
-        prefix = '0' if cat == 'football' else '1'
+        if cat == '24/7 Channels':
+            prefix = '00'
+        elif cat == 'football':
+            prefix = '01'
+        else:
+            prefix = '02'
         return (prefix, display, e.get('name', ''))
     
     events.sort(key=_sort_key)
+    
+    events = get_livextv_events() + events
     
     xml = ['<?xml version="1.0" encoding="UTF-8"?>']
     xml.append('<tv generator-info-name="Streamed.pk Proxy">')
@@ -516,7 +531,17 @@ async def stream_event(event_path: str, request: Request):
     cached = _get_cached_stream(event_path)
 
 
-    if cached and cached["url"]:
+    if cached and cached.get("url"):
+        from scraper import _get_embed_urls
+        embed_urls = await _get_embed_urls(event_path)
+        if embed_urls:
+            best_embed = embed_urls[0]
+            if cached.get("embed_url") and cached["embed_url"] != best_embed["url"]:
+                logger.info("GET: Better stream source detected (%s vs %s). Invalidating cache to upgrade stream.", best_embed["source"], cached.get("source"))
+                stream_cache.pop(event_path, None)
+                cached = None
+
+    if cached and cached.get("url"):
         logger.info("GET: serving from cache: %s", cached["url"][:120])
         _set_stream_headers(event_path, cached["headers"])
         
@@ -530,7 +555,10 @@ async def stream_event(event_path: str, request: Request):
     
     # Cache miss or invalid (or failover) — do a fresh scrape
     logger.info("GET: cache miss or failover, starting Playwright scrape for '%s'", event_path)
-    streams = await get_stream_urls(event_path, max_streams=1)
+    if event_path.startswith("livextv-"):
+        streams = await get_livextv_stream(event_path, max_streams=1)
+    else:
+        streams = await get_stream_urls(event_path, max_streams=1)
     
     if not streams:
         logger.error("GET: scraper returned no m3u8 URL for '%s'", event_path)
@@ -569,6 +597,13 @@ async def handle_proxy_m3u8(b64_url: str, request: Request):
     b64_url += "=" * ((4 - len(b64_url) % 4) % 4)
     url = base64.urlsafe_b64decode(b64_url).decode('utf-8')
     stream_id = request.query_params.get("sid", "")
+
+    cached_entry = _get_cached_entry(stream_id)
+    if cached_entry and cached_entry["active_index"] > 0:
+        active_stream = cached_entry["streams"][cached_entry["active_index"]]
+        if "sub_playlist_url" in active_stream:
+            url = active_stream["sub_playlist_url"]
+
     headers = _get_stream_headers(stream_id)
     if not headers:
         logger.warning("No cached headers for stream '%s' — session may have expired", stream_id)
@@ -589,9 +624,10 @@ async def handle_proxy_m3u8(b64_url: str, request: Request):
             _set_stream_headers(stream_id, new_stream["headers"])
             
             # Fetch and rewrite the new backup stream's sub-playlist
-            m3u8_content = await fetch_and_rewrite_best_sub_playlist(new_stream["url"], new_stream["headers"], proxy_base_url, stream_id=stream_id)
+            m3u8_content, new_sub_playlist_url = await fetch_and_rewrite_best_sub_playlist(new_stream["url"], new_stream["headers"], proxy_base_url, stream_id=stream_id)
             
             if m3u8_content:
+                new_stream["sub_playlist_url"] = new_sub_playlist_url
                 logger.info("Seamless failover successful for '%s'", stream_id)
                 return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers=_M3U8_HEADERS)
                 

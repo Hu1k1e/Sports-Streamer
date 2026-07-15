@@ -444,7 +444,13 @@ async def get_stream_urls(match_id: str, max_streams: int = 1):
         logger.error("Could not resolve any embed URL for match %s", match_id)
         return []
 
-    # Step 2: Use Playwright just to evaluate the embed page and capture m3u8
+    return await scrape_embed_urls(embed_urls, max_streams)
+
+
+async def scrape_embed_urls(embed_urls: list[dict], max_streams: int = 1):
+    """
+    Given a list of embed URLs, evaluate them with Playwright to extract the m3u8.
+    """
     global _playwright_browser
     if not _playwright_browser:
         await init_playwright()
@@ -518,7 +524,7 @@ async def get_stream_urls(match_id: str, max_streams: int = 1):
                         if cookie_str:
                             m3u8_headers["Cookie"] = cookie_str
 
-                        return {"url": m3u8_url, "headers": m3u8_headers, "content": m3u8_content, "source": embed_source}
+                        return {"url": m3u8_url, "headers": m3u8_headers, "content": m3u8_content, "source": embed_source, "embed_url": embed_url}
                     else:
                         logger.warning("Failed to extract m3u8 from %s", embed_url)
                         _dead_embed_urls[embed_url] = time.time()
