@@ -537,8 +537,9 @@ async def stream_event(event_path: str, request: Request):
     # Check cache first
     cached = _get_cached_stream(event_path)
 
-
-    if cached and cached.get("url"):
+    # For streamed.pk events, check if a better embed source is available.
+    # Skip this for livextv channels — they don't exist in the streamed.pk API.
+    if cached and cached.get("url") and not event_path.startswith("livextv-"):
         from scraper import _get_embed_urls
         embed_urls = await _get_embed_urls(event_path)
         if embed_urls:
@@ -561,7 +562,7 @@ async def stream_event(event_path: str, request: Request):
             stream_cache.pop(event_path, None)
     
     # Cache miss or invalid (or failover) — do a fresh scrape
-    logger.info("GET: cache miss or failover, starting Playwright scrape for '%s'", event_path)
+    logger.info("GET: cache miss or failover, starting stream resolution for '%s'", event_path)
     if event_path.startswith("livextv-"):
         streams = await get_livextv_stream(event_path, max_streams=1)
     else:
@@ -618,19 +619,35 @@ async def handle_proxy_m3u8(b64_url: str, request: Request):
     proxy_base_url = str(request.base_url).rstrip('/')
     m3u8_content = await proxy_m3u8(url, headers, proxy_base_url, stream_id=stream_id)
     if not m3u8_content:
-        logger.warning("Sub-playlist fetch failed for stream '%s', attempting seamless failover", stream_id)
+        logger.warning("Sub-playlist fetch failed for stream '%s', attempting failover", stream_id)
         
+        # --- LiveXTV auto-refresh: re-extract a fresh signed URL ---
+        # Signed CDN URLs expire after some time. For livextv channels, we can
+        # get a new one in ~100ms via direct HTTP extraction (no Playwright).
+        if stream_id.startswith("livextv-"):
+            from scraper_livextv import get_livextv_stream
+            logger.info("[AutoRefresh] Re-extracting signed URL for '%s'", stream_id)
+            fresh_streams = await get_livextv_stream(stream_id, max_streams=1)
+            if fresh_streams:
+                fresh = fresh_streams[0]
+                # Update cache with fresh signed URL
+                _set_cached_streams(stream_id, fresh_streams)
+                _set_stream_headers(stream_id, fresh["headers"])
+                # Fetch the fresh chunklist
+                m3u8_content = await proxy_m3u8(fresh["url"], fresh["headers"], proxy_base_url, stream_id=stream_id)
+                if m3u8_content:
+                    logger.info("[AutoRefresh] Successfully refreshed signed URL for '%s'", stream_id)
+                    return Response(content=m3u8_content, media_type="application/vnd.apple.mpegurl", headers=_M3U8_HEADERS)
+        
+        # --- Streamed.pk seamless failover to backup streams ---
         cached = _get_cached_entry(stream_id)
         if cached and cached["active_index"] + 1 < len(cached["streams"]):
-            # Failover!
             cached["active_index"] += 1
             new_stream = cached["streams"][cached["active_index"]]
             logger.info("Seamless failover to backup stream: %s", new_stream.get("source"))
             
-            # Update headers cache
             _set_stream_headers(stream_id, new_stream["headers"])
             
-            # Fetch and rewrite the new backup stream's sub-playlist
             m3u8_content, new_sub_playlist_url = await fetch_and_rewrite_best_sub_playlist(new_stream["url"], new_stream["headers"], proxy_base_url, stream_id=stream_id)
             
             if m3u8_content:
