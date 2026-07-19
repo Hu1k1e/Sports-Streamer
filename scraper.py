@@ -353,7 +353,7 @@ async def _fetch_stream_from_source(client: AsyncSession, source_name: str, sour
 
 
 _dead_embed_urls: dict[str, float] = {}
-_DEAD_STREAM_TTL = 60  # 1 minute
+_DEAD_STREAM_TTL = 10  # 10 seconds (was 60)
 
 async def _get_embed_urls(match_id: str) -> list[str]:
     """
@@ -398,7 +398,11 @@ async def _get_embed_urls(match_id: str) -> list[str]:
     def stream_priority(s):
         # Prioritize admin streams, then sort by viewers
         is_admin = s.get('source') == 'admin'
-        return (is_admin, s.get('viewers', 0))
+        try:
+            v = int(s.get('viewers', 0))
+        except:
+            v = 0
+        return (is_admin, v)
         
     all_streams.sort(key=stream_priority, reverse=True)
     
